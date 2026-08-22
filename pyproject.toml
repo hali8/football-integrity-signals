@@ -42,6 +42,7 @@ Source = "https://github.com/sahalyacoob/football-integrity-signals"
 [project.scripts]
 fis-data-dir = "fis.paths:main"
 fis-fetch-wyscout = "fis.data.wyscout:main"
+fis-gen-dbt-docs = "fis.data.dbt_docs:main"
 fis-ingest-wyscout = "fis.ingest.wyscout:main"
 
 [tool.hatch.build.targets.wheel]

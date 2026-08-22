@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
+import re
 import os
 import shutil
 import sys
@@ -41,6 +43,13 @@ COLLECTION_URL = "https://figshare.com/collections/Soccer_match_event_dataset/44
 DOWNLOAD_URL = "https://ndownloader.figshare.com/files/{file_id}"
 
 STAMP_NAME = ".fis-figshare.json"
+
+#: Articles documented but not downloaded: events.zip is skipped, but the
+#: publisher's description of the event data still applies to what we ingest.
+DOC_ONLY_ARTICLES = {"events": 7770599}
+
+#: Publisher's field documentation, refreshed on every fetch.
+DOCS_NAME = ".fis-figshare-docs.json"
 CHUNK = 1 << 20
 
 
@@ -183,6 +192,48 @@ def repair_truncated_array(raw: str) -> tuple[list, bool] | None:
     return records, salvaged is not None
 
 
+def _parse_field_docs(description: str) -> dict[str, str]:
+    """Pull "- <b>field</b>: text" lines out of an article description."""
+    text = re.sub(r"<(div|br|li|p)[^>]*>", "\n", description, flags=re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    fields: dict[str, str] = {}
+    for line in text.split("\n"):
+        m = re.match(r"\s*-\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*;?\s*$", line)
+        if m and len(m.group(2)) > 3:
+            fields[m.group(1)] = m.group(2)
+    return fields
+
+
+def _summary(description: str) -> str:
+    """The article's own one-paragraph account of what the table is."""
+    text = re.sub(r"<(div|br|li|p)[^>]*>", "\n", description, flags=re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    for para in (p.strip() for p in text.split("\n")):
+        # Skip the citation boilerplate every article opens with.
+        if len(para) > 60 and "cite" not in para.lower() and "http" not in para:
+            return " ".join(para.split())
+    return ""
+
+
+def fetch_documentation(quiet: bool = False) -> dict:
+    """Article summaries and field docs, as the publisher wrote them."""
+    docs: dict[str, dict] = {}
+    wanted = [(a.name.split(".")[0], a.article) for a in ASSETS]
+    wanted += list(DOC_ONLY_ARTICLES.items())
+    for table, article in wanted:
+        url = f"https://api.figshare.com/v2/articles/{article}"
+        meta = json.loads(httpx.get(url, timeout=30.0).text)  # noqa: E501
+        description = meta.get("description") or ""
+        docs[table] = {
+            "title": meta.get("title"),
+            "summary": _summary(description),
+            "fields": _parse_field_docs(description),
+        }
+        if not quiet:
+            print(f"  {table:<20} {len(docs[table]['fields']):>2} field descriptions")
+    return docs
+
+
 def _read_stamp(dest: Path) -> dict | None:
     try:
         return json.loads((dest / STAMP_NAME).read_text())
@@ -289,6 +340,10 @@ def fetch(dest: Path | None = None, *, force: bool = False, quiet: bool = False)
         if repaired:
             stamp["repaired"] = repaired
         (payload / STAMP_NAME).write_text(json.dumps(stamp, indent=2))
+
+        if not quiet:
+            print("Fetching field documentation from the article metadata")
+        (payload / DOCS_NAME).write_text(json.dumps(fetch_documentation(quiet), indent=2))
 
         previous = dest.with_name(dest.name + ".previous") if dest.exists() else None
         if previous is not None:

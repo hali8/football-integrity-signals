@@ -1041,7 +1041,7 @@ packages:
 - pypi: ./
   name: football-integrity-signals
   version: 0.1.0
-  sha256: 2a0cd7960303f06e0e1332c7b3814f842702c87dd77d3fe52edc811bf348d8d8
+  sha256: 25c62421641eacf5cf9d47fa9c2d582a36d8a4e5b40f2e0a40eb14eb0620dc73
   requires_dist:
   - platformdirs>=4.0
   - httpx>=0.27

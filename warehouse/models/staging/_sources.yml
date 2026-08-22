@@ -16,18 +16,18 @@ sources:
       per-match parquet because kloppy has to decode them first; the dimensions
       are read as published. Different formats, one provenance -- we transcoded
       the events, we did not originate any of these facts.
+      Every wyId is an identifier assigned by Wyscout.
     meta:
       external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.json')"
     tables:
       - name: events
         meta:
-          external_location: "{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet"
+          # union_by_name because 72 of the 1941 files have no card_type column:
+          # kloppy only emits it when a card occurred. Without this, any query
+          # touching that column fails with "schema mismatch in glob".
+          external_location: "read_parquet('{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet', union_by_name=true)"
         data_tests: [not_empty]
-        description: >
-          One row per event, decoded from Wyscout V2 JSON by kloppy. Two things
-          differ from the published feed: coordinates are transformed to
-          ACTION_EXECUTING_TEAM orientation, and match_id is added, because
-          kloppy's frame covers a single match and carries no match id.
+        description: '{{ doc("wyscout_events") }}'
         columns:
           - name: match_id
             description: Wyscout match id. Joins to wyscout.matches.wyId.
@@ -35,10 +35,7 @@ sources:
 
       - name: matches
         data_tests: [not_empty]
-        description: >
-          One row per match: date, competition, venue, score, referee
-          assignments, and per-team lineups. Glob across the per-league files;
-          union_by_name because groupName appears only in tournament files.
+        description: '{{ doc("wyscout_matches") }} Glob across the per-league files; union_by_name because groupName appears only in tournament files.'
         meta:
           external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/matches_*.json', union_by_name=true)"
         columns:
@@ -59,7 +56,7 @@ sources:
 
       - name: players
         data_tests: [not_empty]
-        description: Player identities, with role and position.
+        description: '{{ doc("wyscout_players") }}'
         columns:
           - name: wyId
             data_tests: [unique, not_null]
@@ -68,34 +65,28 @@ sources:
 
       - name: teams
         data_tests: [not_empty]
-        description: Team lookup, club and national.
+        description: '{{ doc("wyscout_teams") }}'
         columns:
           - name: wyId
             data_tests: [unique, not_null]
 
       - name: competitions
         data_tests: [not_empty]
-        description: The seven competitions covered by the dataset.
+        description: '{{ doc("wyscout_competitions") }}'
         columns:
           - name: wyId
             data_tests: [unique, not_null]
 
       - name: referees
         data_tests: [not_empty]
-        description: >
-          Referee identities. Published truncated; the fetcher recovers all 627
-          records and keeps the original as referees.as-published.json.
-          10 officials referenced by matches have no entry here -- 95 of 7942
-          assignments, so expect nulls when joining.
+        description: '{{ doc("wyscout_referees") }}'
         columns:
           - name: wyId
             data_tests: [unique, not_null]
 
       - name: coaches
         data_tests: [not_empty]
-        description: >
-          Coach identities. 3 coaches referenced by matches have no entry
-          here -- 13 of 3645 match sides.
+        description: '{{ doc("wyscout_coaches") }}'
         columns:
           - name: wyId
             data_tests: [unique, not_null]

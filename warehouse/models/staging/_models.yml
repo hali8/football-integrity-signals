@@ -1,0 +1,372 @@
+version: 2
+
+models:
+  - name: stg_events
+    data_tests: [not_empty]
+    description: '{{ doc("wyscout_events") }}'
+    columns:
+      - name: event_id
+        description: Wyscout event id, unique across the whole dataset.
+        data_tests: [unique, not_null]
+
+      - name: provider
+        description: >
+          Constant 'wyscout' today. Present because another provider's ids share
+          this namespace numerically without meaning the same thing, so keys
+          downstream should be (provider, id) rather than id alone.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [wyscout]
+
+      - name: match_id
+        description: Every event resolves to a match; verified clean.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+
+      - name: team_id
+        description: The team credited with the event. Resolves cleanly.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_teams')
+                field: team_id
+
+      - name: player_id
+        description: >
+          Null for 6.8% of events — team-level events with no individual actor,
+          not missing data. Every non-null value resolves; the relationships
+          test ignores nulls.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_players')
+                field: player_id
+
+      - name: period_id
+        description: 1 and 2 are the halves, 3 and 4 extra time, 5 penalties.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5]
+                quote: false
+
+      - name: seconds_into_period
+        description: >
+          Seconds since this period began, converted from the microseconds
+          pandas produces when serialising kloppy's timedelta.
+        data_tests: [not_null]
+
+      - name: event_type
+        description: kloppy's normalised taxonomy, not Wyscout's numeric ids.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  [
+                    BALL_OUT,
+                    CARD,
+                    CLEARANCE,
+                    DUEL,
+                    FOUL_COMMITTED,
+                    "GENERIC:generic",
+                    GOALKEEPER,
+                    INTERCEPTION,
+                    MISCONTROL,
+                    PASS,
+                    RECOVERY,
+                    SHOT,
+                  ]
+
+      - name: result
+        description: Outcome, meaningful per event_type. Null for 13% of events.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  [
+                    BLOCKED,
+                    COMPLETE,
+                    GOAL,
+                    INCOMPLETE,
+                    LOST,
+                    NEUTRAL,
+                    OFFSIDE,
+                    OFF_TARGET,
+                    OUT,
+                    POST,
+                    SAVED,
+                    SUCCESS,
+                    WON,
+                  ]
+
+      - name: card_type
+        description: >
+          Null unless a card was shown. kloppy omits this column entirely for
+          the 72 matches with no cards, which is why the source must read with
+          union_by_name.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [FIRST_YELLOW, SECOND_YELLOW, RED]
+
+      - name: set_piece_type
+        description: >
+          Wyscout free-kick subEventId — 30 corner, 31 and 32 free
+          kick, 34 goal kick, 35 penalty, 36 throw-in.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [CORNER_KICK, FREE_KICK, GOAL_KICK, PENALTY, THROW_IN]
+
+      - name: duel_type
+        description: >
+          Also last-qualifier-wins: kloppy attaches LOOSE_BALL alongside AERIAL
+          and GROUND, so LOOSE_BALL never survives into this column.
+          Sources: duel subEventId 10 aerial, 11 and 12 ground, 13 ground loose
+          ball; SLIDING_TACKLE from tag 1601.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [AERIAL, GROUND, SLIDING_TACKLE]
+
+      - name: goalkeeper_type
+        description: >
+          Wyscout save subEventId — 90 reflexes, 91 save attempt.
+          SAVE is also set when a shot is parsed as saved.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [REFLEX, SAVE, SAVE_ATTEMPT]
+
+      - name: body_part_type
+        description: >
+          LEFT_FOOT, RIGHT_FOOT and HEAD_OTHER come from tags 401
+          "Left", 402 "Right" and 403 "head/body". HEAD and KEEPER_ARM come from
+          pass subEventIds 82 and 81, not from tags.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [HEAD, HEAD_OTHER, KEEPER_ARM, LEFT_FOOT, RIGHT_FOOT]
+
+      - name: pass_type
+        description: >
+          Only the LAST qualifier kloppy attached, not the pass's primary type.
+          A cross tagged 801 "high" lands here as HIGH_PASS, and tagged 301
+          "assist" as ASSIST — in one sample match only 12 of 33 real crosses
+          show as CROSS. Do not count crosses with this column.
+          Sources: pass subEventId 80 cross, 81 hand, 82 head, 83 high, 84
+          launch, 85 simple, 86 smart; throw-ins (set-piece 36) also yield
+          HAND_PASS; THROUGH_BALL from tag 901, ASSIST from tag 301.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  [
+                    ASSIST,
+                    CROSS,
+                    HAND_PASS,
+                    HEAD_PASS,
+                    HIGH_PASS,
+                    LAUNCH,
+                    SIMPLE_PASS,
+                    SMART_PASS,
+                    THROUGH_BALL,
+                  ]
+
+      - name: qualifiers
+        description: >
+          Every qualifier kloppy attached, as "Kind:VALUE". The flat *_type
+          columns keep only the last of each kind, so this is the one to count
+          with: list_contains(qualifiers, 'Pass:CROSS') finds all 33 crosses in
+          a match where pass_type shows 12, and 'Duel:LOOSE_BALL' appears here
+          but never in duel_type at all.
+        data_tests: [not_null]
+
+      - name: qualifiers
+        description: >
+          Every qualifier kloppy attached, as "Kind:VALUE". The flat *_type
+          columns keep only the last of each kind, so this is what to count
+          with: list_contains(qualifiers, 'Pass:CROSS') finds all 33 crosses in
+          a match where pass_type shows 12, and 'Duel:LOOSE_BALL' appears here
+          but never in duel_type at all.
+
+      - name: start_x
+        description: >
+          Normalised 0-1, already transformed to ACTION_EXECUTING_TEAM
+          orientation, so x runs towards the goal being attacked.
+        data_tests: [not_null]
+
+      - name: start_y
+        description: Normalised 0-1.
+        data_tests: [not_null]
+
+      - name: end_x
+        description: Null where the event has no end location.
+      - name: end_y
+        description: Null where the event has no end location.
+
+      - name: is_successful
+        description: Null for 13% of events, where success is not meaningful.
+      - name: is_counter_attack
+        description: Null for 0.4% of events.
+
+  - name: stg_matches
+    data_tests: [not_empty]
+    description: '{{ doc("wyscout_matches") }}'
+    columns:
+      - name: match_id
+        description: >
+          Tested towards stg_match_referees rather than from it: an orphan test
+          finds assignments pointing at no match, but the real gap is the
+          reverse -- 16 matches carry no officials at all. Upstream, and
+          scattered across four leagues rather than clustered, so it warns.
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_match_referees')
+                field: match_id
+              config:
+                severity: warn
+      - name: competition_id
+        description: Every match resolves; verified clean.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_competitions')
+                field: competition_id
+      - name: winning_team_id
+        description: Null for a draw. Wyscout writes 0, nulled in staging.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_teams')
+                field: team_id
+
+  - name: stg_match_referees
+    data_tests: [not_empty]
+    description: >
+      One row per official per match, unnested from matches.referees.
+      7942 assignments across 1941 matches.
+    columns:
+      - name: match_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+      - name: referee_id
+        description: >
+          10 of 637 officials referenced here have no record in stg_referees --
+          95 assignments, 1.2%. An upstream gap, not our processing, so this
+          warns rather than fails. The number is what matters: if it moves,
+          something changed.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_referees')
+                field: referee_id
+              config:
+                severity: warn
+      - name: role
+        description: >
+          Six roles, not four: additional assistants appear in 132 and 130
+          assignments respectively, used in some UEFA competitions.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  [
+                    referee,
+                    firstAssistant,
+                    secondAssistant,
+                    fourthOfficial,
+                    firstAdditionalAssistant,
+                    secondAdditionalAssistant,
+                  ]
+
+  - name: stg_match_teams
+    data_tests: [not_empty]
+    description: One row per team per match, unnested from teamsData. Two per match.
+    columns:
+      - name: match_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+      - name: team_id
+        description: Every team resolves; verified clean.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_teams')
+                field: team_id
+      - name: coach_id
+        description: >
+          Null where Wyscout wrote 0 (unknown). Of those that are set, 3 of 211
+          have no record in stg_coaches -- 13 match sides, 0.4%. Upstream gap.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_coaches')
+                field: coach_id
+              config:
+                severity: warn
+      - name: side
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [home, away]
+
+  - name: stg_referees
+    data_tests: [not_empty]
+    description: '{{ doc("wyscout_referees") }}'
+    columns:
+      - name: referee_id
+        data_tests: [unique, not_null]
+
+  - name: stg_coaches
+    data_tests: [not_empty]
+    description: '{{ doc("wyscout_coaches") }}'
+    columns:
+      - name: coach_id
+        data_tests: [unique, not_null]
+
+  - name: stg_teams
+    data_tests: [not_empty]
+    description: '{{ doc("wyscout_teams") }}'
+    columns:
+      - name: team_id
+        data_tests: [unique, not_null]
+
+  - name: stg_competitions
+    data_tests: [not_empty]
+    description: '{{ doc("wyscout_competitions") }}'
+    columns:
+      - name: competition_id
+        data_tests: [unique, not_null]
+
+  - name: stg_players
+    data_tests: [not_empty]
+    description: '{{ doc("wyscout_players") }}'
+    columns:
+      - name: player_id
+        data_tests: [unique, not_null]

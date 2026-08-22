@@ -16,12 +16,29 @@ from fis.ingest.kloppy_workarounds import load_match
 from fis.paths import ensure, parquet_dir
 
 
+def _qualifiers(event) -> list[str]:
+    """Every qualifier as "Type:VALUE".
+
+    to_df's flat columns keep only the last qualifier of each kind, so a cross
+    tagged "high" lands in pass_type as HIGH_PASS and the cross is lost. Keeping
+    the list means the flattening happens in SQL, where it can be chosen.
+    """
+    out = []
+    for q in getattr(event, "qualifiers", None) or []:
+        value = getattr(q, "value", None)
+        if value is None or value is False:
+            continue
+        kind = type(q).__name__.removesuffix("Qualifier")
+        out.append(f"{kind}:{getattr(value, 'name', value)}")
+    return out
+
+
 def ingest_match(match_id: str, json_path: Path, out_dir: Path) -> tuple[Path, list[str]]:
     """Write one match to parquet. Returns the path and any repairs that were needed."""
     ds, applied = load_match(json_path)
     # Do this, or every spatial metric is noise.
     ds = ds.transform(to_orientation="ACTION_EXECUTING_TEAM")
-    df = ds.to_df()
+    df = ds.to_df("*", qualifiers=_qualifiers)
     # kloppy's frame is ONE match -- it has no match_id column, and everything
     # downstream keys on it.
     df["match_id"] = match_id

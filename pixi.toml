@@ -10,13 +10,17 @@ DBT_PROFILES_DIR = "warehouse"
 DBT_PROJECT_DIR = "warehouse"
 
 [tasks]
-fetch = "fis-fetch-wyscout"
-ingest = "fis-ingest-wyscout"
-# Project and profile discovery come from [activation.env] above. Everything dbt
-# reads is relative to the working directory, and pixi runs tasks from the
-# manifest directory, so the repository root is always the working directory.
+fetch = "fis-fetch-wyscout && fis-gen-dbt-docs"
+# Chained so `pixi run build` works on a fresh clone. All three are idempotent.
+ingest = { cmd = "fis-ingest-wyscout", depends-on = ["fetch"] }
+# Discovery comes from [activation.env]; dbt's paths are relative to the working
+# directory, and pixi runs tasks from the manifest directory.
 dbt-debug = "dbt debug"
-build = "dbt build"
+# Two passes: audit models introspect the warehouse at compile time, so staging
+# must exist first. Not expressible with ref() -- no graph at parse time.
+build = { cmd = "dbt build --exclude path:models/audit && dbt build --select path:models/audit+", depends-on = [
+  "ingest",
+] }
 dbt = "dbt"
 # Includes the stage-rule import bans under src/fis/analysis/.
 lint = "ruff check src"
