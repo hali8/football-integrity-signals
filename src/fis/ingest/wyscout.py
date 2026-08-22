@@ -7,17 +7,18 @@ the dbt ``raw.events`` source globs.
 from __future__ import annotations
 
 import argparse
+import collections
 import sys
 from pathlib import Path
 
-from kloppy import wyscout
-
 from fis.data.wyscout import fetch, match_files
+from fis.ingest.kloppy_workarounds import load_match
 from fis.paths import ensure, parquet_dir
 
 
-def ingest_match(match_id: str, json_path: Path, out_dir: Path) -> Path:
-    ds = wyscout.load(event_data=str(json_path), data_version="V2")
+def ingest_match(match_id: str, json_path: Path, out_dir: Path) -> tuple[Path, list[str]]:
+    """Write one match to parquet. Returns the path and any repairs that were needed."""
+    ds, applied = load_match(json_path)
     # Do this, or every spatial metric is noise.
     ds = ds.transform(to_orientation="ACTION_EXECUTING_TEAM")
     df = ds.to_df()
@@ -26,7 +27,7 @@ def ingest_match(match_id: str, json_path: Path, out_dir: Path) -> Path:
     df["match_id"] = match_id
     target = out_dir / f"events_{match_id}.parquet"
     df.to_parquet(target, index=False)
-    return target
+    return target, applied
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -62,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         json_files = json_files[: args.limit]
 
     done, skipped, failed = 0, 0, []
+    repairs: collections.Counter[str] = collections.Counter()
     for path in json_files:
         # koenvo names files by Wyscout match id.
         match_id = path.stem
@@ -69,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
             skipped += 1
             continue
         try:
-            ingest_match(match_id, path, out_dir)
+            _, applied = ingest_match(match_id, path, out_dir)
+            repairs.update(applied)
             done += 1
             if done % 100 == 0:
                 print(f"...{done} ingested")
@@ -77,6 +80,11 @@ def main(argv: list[str] | None = None) -> int:
             failed.append((match_id, repr(exc)))
 
     print(f"ingested {done}, skipped {skipped}, failed {len(failed)}")
+    if repairs:
+        # Surfaced, not hidden: these are known kloppy/data defects, and a change
+        # in these counts is worth noticing.
+        summary = ", ".join(f"{name} {n}" for name, n in sorted(repairs.items()))
+        print(f"  workarounds applied: {summary}")
     for match_id, err in failed[:20]:
         print(f"  FAILED {match_id}: {err}")
     return 1 if failed and done == 0 else 0

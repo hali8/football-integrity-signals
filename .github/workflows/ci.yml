@@ -55,6 +55,12 @@ jobs:
       - name: dbt project parses
         run: dbt parse --project-dir warehouse --profiles-dir warehouse
 
+      # The dataset is not downloaded in CI, so the tests needing it skip
+      # themselves. What still runs is the check that our period mapping agrees
+      # with kloppy's -- which is the one that guards against a silent data shift.
+      - name: Tests
+        run: pytest -m "not slow" -rs
+
       - name: Stage rule is enforced
         run: |
           mkdir -p src/fis/analysis/_ci_probe

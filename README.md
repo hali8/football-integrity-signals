@@ -162,6 +162,58 @@ downstream keys on.
 
 One bad match never aborts the run; failures are collected and reported at the end.
 
+### Deserialisation workarounds
+
+38 of the 1941 matches will not load with a plain `kloppy.wyscout.load`. Three
+distinct defects are responsible, repaired in
+[src/fis/ingest/kloppy_workarounds.py](src/fis/ingest/kloppy_workarounds.py):
+
+| Defect                | Files | Cause                                           |
+| --------------------- | ----- | ----------------------------------------------- |
+| `extra-time-period`   | 10    | kloppy: `deserializer_v2` evaluates `int("E1")` |
+| `shot-as-final-event` | 6     | kloppy: `_parse_shot` lookahead is unguarded    |
+| `null-roster-entry`   | 22    | upstream data: a `null` entry in `players`      |
+
+**Repairs are applied lazily and specifically.** Every match is first loaded
+normally; only a failure matching a known signature triggers a repair and a
+retry. An unrecognised error is re-raised untouched, so a new defect surfaces as
+a failure rather than being silently absorbed. The ~98% of matches that load
+cleanly are never touched — no JSON is re-parsed and no monkeypatch is installed.
+
+Two of the defects raise an identical
+`TypeError: 'NoneType' object is not subscriptable`, so they are told apart by
+the kloppy function on the traceback, not by the message. That also means a
+kloppy restructure stops matching anything and the error surfaces, instead of a
+stale patch mis-firing.
+
+Nothing on disk is modified. JSON is repaired in memory and passed to kloppy as a
+`BytesIO`, so `data/download/` stays byte-identical to the pinned commit that
+`.fis-dataset.json` asserts.
+
+**Why each is lossless.**
+
+- _Extra time._ kloppy's V2 deserialiser reads `matchPeriod` in exactly two
+  places, both only to derive `period_id`, so rewriting the string is complete
+  rather than a patch of one call site. `E1/E2/P` become periods 3/4/5 —
+  identical to kloppy's own canonical mapping in `deserializer_v3._parse_period_id`,
+  which is what a fixed V2 deserialiser would almost certainly use. A test
+  asserts that agreement, so an upstream fix cannot silently shift your data.
+- _Shot as final event._ A shot's result comes from its own tags; `next_event`
+  only decides whether a goalkeeper qualifier is attached. All six such shots
+  carry tag 1802 ("not accurate") and resolve to `OFF_TARGET` or `POST`, so no
+  save qualifier existed to lose. Verified: all six files are time-ordered and
+  the shot really is the final event, so no save is hiding out of file order.
+- _Null roster._ The entry carries no player, so dropping it removes nothing.
+
+**These workarounds are meant to die.** Because repairs run only after a
+failure, an upstream fix would make them silently unreachable.
+`tests/test_kloppy_workarounds.py` asserts each defect _still reproduces_ — when
+kloppy fixes one, that test fails and tells you to delete the repair.
+
+kloppy is pinned to `>=3.19,<3.20` for the same reason the dataset commit is
+pinned: the parser version determines the ingested output as much as the input
+data does.
+
 ## Warehouse
 
 A self-contained duckdb + dbt project lives in `warehouse/`. The `raw.events`
@@ -206,7 +258,14 @@ Mart 'mart_match_summary' has no column(s): xg_conceded.
 ```bash
 pixi run lint            # ruff, including the stage-rule bans
 pixi run hooks           # every pre-commit hook, across all files
+pixi run test            # fast tests
+pixi run test-all        # adds the slow pass over all 1941 matches
 ```
+
+Tests needing the dataset skip themselves when it is absent, so `pixi run test`
+works on a fresh clone. CI runs them that way — what still executes there is the
+check that our period mapping agrees with kloppy's, which is the one guarding
+against a silent change to ingested data.
 
 `ruff format` is the formatter — there is no black hook, since running both means
 two tools fighting over the same files. Prettier handles YAML, JSON and Markdown;

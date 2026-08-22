@@ -17,6 +17,9 @@ lint = "ruff check src"
 # Run once per clone: installs .git/hooks/pre-commit.
 hooks-install = "pre-commit install"
 hooks = "pre-commit run --all-files"
+# The slow marker walks all 1941 matches; skip it for the quick loop.
+test = "pytest -m 'not slow'"
+test-all = "pytest"
 
 [dependencies]
 python = "3.12.*"
@@ -29,9 +32,11 @@ scipy = ">=1.18.0,<2"
 pyarrow = ">=25.0.0,<26"
 matplotlib = ">=3.11.1,<4"
 pre-commit = ">=4.6.2,<5"
+pytest = ">=9.1.1,<10"
 
 [pypi-dependencies]
 football-integrity-signals = { path = ".", editable = true }
-kloppy = ">=3.19.0, <4"
+# Kept in step with pyproject.toml: the workarounds are verified against 3.19.0.
+kloppy = ">=3.19.0, <3.20"
 dbt-core = ">=1.12.3, <2"
 dbt-duckdb = ">=1.11.0, <2"
