@@ -5,6 +5,10 @@ name = "football-integrity-signals"
 platforms = ["osx-arm64"]
 version = "0.1.0"
 
+[activation.env]
+DBT_PROFILES_DIR = "warehouse"
+DBT_PROJECT_DIR = "warehouse"
+
 [tasks]
 fetch = "fis-fetch-wyscout"
 ingest = "fis-ingest-wyscout"
