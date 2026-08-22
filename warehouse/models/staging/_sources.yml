@@ -14,6 +14,7 @@ sources:
       external_location: "{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet"
     tables:
       - name: events
+        data_tests: [not_empty]
         description: One row per event, with match_id added by the ingest step.
         columns:
           - name: match_id
@@ -30,6 +31,7 @@ sources:
       external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.json')"
     tables:
       - name: matches
+        data_tests: [not_empty]
         description: >
           One row per match: date, competition, venue, score, referee
           assignments, and per-team lineups. Glob across the per-league files;
@@ -53,6 +55,7 @@ sources:
             data_tests: [not_null]
 
       - name: players
+        data_tests: [not_empty]
         description: Player identities, with role and position.
         columns:
           - name: wyId
@@ -61,18 +64,21 @@ sources:
             description: STRUCT of code2, code3 and name, e.g. GK / Goalkeeper.
 
       - name: teams
+        data_tests: [not_empty]
         description: Team lookup, club and national.
         columns:
           - name: wyId
             data_tests: [unique, not_null]
 
       - name: competitions
+        data_tests: [not_empty]
         description: The seven competitions covered by the dataset.
         columns:
           - name: wyId
             data_tests: [unique, not_null]
 
       - name: referees
+        data_tests: [not_empty]
         description: >
           Referee identities. Published truncated; the fetcher recovers all 627
           records and keeps the original as referees.as-published.json.
@@ -83,6 +89,7 @@ sources:
             data_tests: [unique, not_null]
 
       - name: coaches
+        data_tests: [not_empty]
         description: >
           Coach identities. 3 coaches referenced by matches have no entry
           here -- 13 of 3645 match sides.
@@ -98,11 +105,13 @@ sources:
       external_location: "read_csv_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.csv')"
     tables:
       - name: eventid2name
+        data_tests: [not_empty]
         description: eventId and subEventId to their labels.
         columns:
           - name: event
             data_tests: [not_null]
       - name: tags2name
+        data_tests: [not_empty]
         description: Tag id to label and description.
         columns:
           - name: Tag

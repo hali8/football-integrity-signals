@@ -273,9 +273,19 @@ data does.
 
 ## Warehouse
 
-A self-contained duckdb + dbt project lives in `warehouse/`. The `raw.events`
-source globs the parquet output via `external_location`, honouring `FIS_DATA_DIR`
-so it follows the same path resolution as the Python code.
+A self-contained duckdb + dbt project lives in `warehouse/`. Three source groups,
+all resolved through `external_location` honouring `FIS_DATA_DIR`, so they follow
+the same path resolution as the Python code:
+
+| Source group | Read as          | Tables                                                               |
+| ------------ | ---------------- | -------------------------------------------------------------------- |
+| `raw`        | parquet glob     | `events`                                                             |
+| `reference`  | `read_json_auto` | `matches`, `players`, `teams`, `competitions`, `referees`, `coaches` |
+| `lookup`     | `read_csv_auto`  | `eventid2name`, `tags2name`                                          |
+
+`reference.matches` overrides the group's location to glob the per-league files
+with `union_by_name=true`, because `groupName` appears only in the tournament
+files.
 
 ```bash
 pixi run dbt-debug     # verify the connection and project config
@@ -294,6 +304,38 @@ the parquet glob in `_sources.yml`. All of them resolve against the working
 directory, and the repository root is where they are correct. `pixi run` handles
 this for you by always starting from the manifest directory; inside `pixi shell`
 it is yours to get right.
+
+### Adding a source
+
+There is no bespoke verification script, and deliberately so: everything worth
+checking is a dbt test, which means it runs in CI and in `dbt build` alongside
+everything else rather than only when someone remembers to invoke it.
+
+1. Add the table under the right group in
+   [\_sources.yml](warehouse/models/staging/_sources.yml). A new file format
+   needs a new group with its own `external_location`; a new table in an existing
+   format needs only a `- name:`.
+2. Give it `data_tests: [not_empty]`, and `unique` / `not_null` on its key.
+   Check the key really is unique first — a test you add already broken teaches
+   the team to ignore red builds.
+3. Describe the nested columns. `teamsData` and `referees` are the ones staging
+   models unnest, and a reader should not have to query the data to learn its
+   shape.
+4. `pixi run dbt build`. That compiles every model, runs every test, and is the
+   whole verification story.
+
+`not_empty` is a custom generic test in
+[warehouse/tests/generic/](warehouse/tests/generic/not_empty.sql). It exists
+because dbt validates that a source's _configuration_ parses, never that it
+resolves to anything: with no model selecting from it, a source pointing at a
+missing file is completely invisible — `dbt build` reports `Nothing to do` and
+exits clean.
+
+Once every source feeds a staging model, a wrong path fails at compile time
+anyway and this test becomes partly redundant. What it still catches is the case
+`dbt build` never will: a path that resolves but returns **zero rows**. duckdb
+reads `[]` as 0 rows rather than raising, so models build, marts come out empty,
+and nothing else complains.
 
 ## Analysis
 
