@@ -300,30 +300,22 @@ without any flags.
 
 ### Where the warehouse looks for data
 
-`fis.paths.data_dir()` is the single source of truth. dbt cannot call Python, so
-the pixi tasks export the value and `_sources.yml` reads it:
+Nothing to configure. `_sources.yml` reads
+`{{ env_var('FIS_DATA_DIR', 'data') }}`, and the fallback is correct because dbt
+can only run from the repository root anyway — `DBT_PROJECT_DIR`,
+`DBT_PROFILES_DIR` and the duckdb path in `profiles.yml` are all relative to the
+working directory. From there `./data` **is** `fis.paths.data_dir()`, which
+resolves to `<the directory holding pyproject.toml>/data`. pixi always starts
+tasks in the manifest directory, so this holds however you invoke them.
 
-```toml
-build = "FIS_DATA_DIR=$(fis-data-dir) dbt build"
-```
-
-`_sources.yml` uses `{{ env_var('FIS_DATA_DIR') }}` with **no default**. A default
-would be the same fact written down in two places, drifting apart with only a
-comment asking them to agree. Unset, dbt stops with
-`Env var required but not provided: 'FIS_DATA_DIR'` rather than quietly reading
-somewhere else.
-
-Outside pixi — the package installed with pip, dbt run by hand — the same one
-line works, because `fis-data-dir` is a console script that ships with the
-package:
+Set `FIS_DATA_DIR` to point somewhere else, and both sides follow it —
+`data_dir()` checks the same variable first. `fis-data-dir` prints whatever is
+currently in effect:
 
 ```bash
-export FIS_DATA_DIR=$(fis-data-dir)
-dbt build --project-dir warehouse --profiles-dir warehouse
+fis-data-dir                          # where is my data?
+FIS_DATA_DIR=/scratch pixi run build  # build against a different copy
 ```
-
-Setting `FIS_DATA_DIR` yourself still wins everywhere: `data_dir()` honours it
-first, so `fis-data-dir` echoes back what you set.
 
 **Run it from the repository root.** Those two variables are relative, and so are
 the paths dbt reads out of the project — the duckdb file in `profiles.yml` and

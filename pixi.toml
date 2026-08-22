@@ -12,13 +12,12 @@ DBT_PROJECT_DIR = "warehouse"
 [tasks]
 fetch = "fis-fetch-wyscout"
 ingest = "fis-ingest-wyscout"
-# Project and profile discovery come from [activation.env] above. FIS_DATA_DIR is
-# exported from fis.paths.data_dir() so the warehouse and the Python package
-# cannot disagree about where the data lives -- _sources.yml reads that variable
-# and deliberately has no default of its own.
-dbt-debug = "FIS_DATA_DIR=$(fis-data-dir) dbt debug"
-build = "FIS_DATA_DIR=$(fis-data-dir) dbt build"
-dbt = "FIS_DATA_DIR=$(fis-data-dir) dbt"
+# Project and profile discovery come from [activation.env] above. Everything dbt
+# reads is relative to the working directory, and pixi runs tasks from the
+# manifest directory, so the repository root is always the working directory.
+dbt-debug = "dbt debug"
+build = "dbt build"
+dbt = "dbt"
 # Includes the stage-rule import bans under src/fis/analysis/.
 lint = "ruff check src"
 # Run once per clone: installs .git/hooks/pre-commit.
