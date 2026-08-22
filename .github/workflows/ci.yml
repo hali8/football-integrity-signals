@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint (pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Runs exactly the hooks in .pre-commit-config.yaml, so CI and the local
+      # hook cannot drift apart. Includes the stage-rule import bans from
+      # src/fis/analysis/ruff.toml.
+      - uses: pre-commit/action@v3.0.1
+
+  package:
+    name: package + dbt parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Also proves the pyproject dependency set resolves without pixi, which is
+      # the path a PyPI consumer would take.
+      - name: Install
+        run: pip install -e ".[warehouse,dev]"
+
+      - name: Import every module
+        run: |
+          python -c "
+          import fis, fis.paths, fis.warehouse
+          import fis.data.wyscout, fis.ingest.wyscout, fis.analysis
+          print('data_dir:', fis.paths.data_dir())
+          "
+
+      - name: Console scripts are wired
+        run: |
+          fis-fetch-wyscout --help
+          fis-ingest-wyscout --help
+
+      - name: dbt project parses
+        run: dbt parse --project-dir warehouse --profiles-dir warehouse
+
+      - name: Stage rule is enforced
+        run: |
+          mkdir -p src/fis/analysis/_ci_probe
+          printf 'from fis.paths import parquet_dir\nprint(parquet_dir())\n' \
+            > src/fis/analysis/_ci_probe/probe.py
+          if ruff check src/fis/analysis/_ci_probe/probe.py; then
+            echo "::error::stage-rule import ban did not fire — analysis can reach parquet_dir()"
+            exit 1
+          fi
+          echo "stage-rule ban fired as expected"
+          rm -rf src/fis/analysis/_ci_probe

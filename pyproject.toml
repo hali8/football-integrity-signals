@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "football-integrity-signals"
+version = "0.1.0"
+description = "Match-integrity signal detection over Wyscout event data"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "Sahal Yacoob", email = "46266234+hali8@users.noreply.github.com" },
+]
+license = { text = "MIT" }
+keywords = ["football", "soccer", "wyscout", "event-data", "integrity"]
+classifiers = [
+  "Programming Language :: Python :: 3.12",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+dependencies = [
+  "platformdirs>=4.0",
+  "httpx>=0.27",
+  "kloppy>=3.19,<4",
+  "pandas>=2.2",
+  "pyarrow>=15",
+]
+
+[project.optional-dependencies]
+warehouse = ["duckdb>=1.0", "dbt-core>=1.12,<2", "dbt-duckdb>=1.11,<2"]
+analysis = ["numpy>=2.0", "scipy>=1.13", "matplotlib>=3.8"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.urls]
+Homepage = "https://github.com/sahalyacoob/football-integrity-signals"
+Source = "https://github.com/sahalyacoob/football-integrity-signals"
+
+[project.scripts]
+fis-fetch-wyscout = "fis.data.wyscout:main"
+fis-ingest-wyscout = "fis.ingest.wyscout:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fis"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/fis", "warehouse", "README.md", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

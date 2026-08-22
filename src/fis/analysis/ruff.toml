@@ -1,0 +1,28 @@
+# Enforces the stage rule (see README): analysis reads marts, nothing else.
+#
+# Ruff applies the *nearest* config file to each file, so these bans cover this
+# directory only -- fis/ingest/ and fis/data/ still use these accessors freely.
+#
+# At runtime the same reach only warns (fis.paths.StageRuleWarning), so an
+# exploratory session is never broken mid-flight. This lint is what stops it
+# reaching a merge.
+extend = "../../../pyproject.toml"
+
+[lint]
+extend-select = ["TID"]
+
+[lint.flake8-tidy-imports.banned-api]
+"fis.paths.parquet_dir".msg = """analysis reads marts, not parquet. \
+Use fis.warehouse.mart(<name>). A missing column is a missing dbt model: \
+add it to warehouse/models/marts/ and run `pixi run build`."""
+
+"fis.paths.download_dir".msg = """analysis must not touch raw JSON. \
+Use fis.warehouse.mart(<name>). If the data is not in a mart yet, \
+add a dbt model in warehouse/models/ and run `pixi run build`."""
+
+"fis.paths.wyscout_dir".msg = """analysis must not touch raw JSON. \
+Use fis.warehouse.mart(<name>). If the data is not in a mart yet, \
+add a dbt model in warehouse/models/ and run `pixi run build`."""
+
+"kloppy".msg = """analysis must not parse event data. Ingest owns kloppy; \
+analysis reads marts via fis.warehouse.mart(<name>)."""

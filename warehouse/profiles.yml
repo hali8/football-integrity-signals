@@ -1,0 +1,4 @@
+integrity:
+  target: dev
+  outputs:
+    dev: { type: duckdb, path: warehouse/integrity.duckdb, threads: 4 }

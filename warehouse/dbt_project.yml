@@ -1,0 +1,32 @@
+# Invoke from the repository root, e.g. `pixi run build`. The relative paths in
+# profiles.yml and in models/staging/_sources.yml resolve against the working
+# directory, not against this file, so the working directory must be the root.
+name: integrity
+version: "1.0"
+config-version: 2
+profile: integrity
+
+# Relative to this file's directory, so these are warehouse/models etc.
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+target-path: "target"
+log-path: "logs"
+clean-targets: ["target", "dbt_packages"]
+
+# Separate schemas per layer, so "analysis reads marts only" is a property of the
+# database rather than a convention. dbt names these <target schema>_<custom>,
+# i.e. main_staging / main_intermediate / main_marts.
+models:
+  integrity:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: view
+      +schema: intermediate
+    marts:
+      +materialized: table
+      +schema: marts

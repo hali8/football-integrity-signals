@@ -1,0 +1,9 @@
+sources:
+  - name: raw
+    # FIS_DATA_DIR must match what fis.paths.data_dir() resolves to; the default
+    # is correct when dbt is invoked from the project root.
+    meta:
+      {
+        external_location: "{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet",
+      }
+    tables: [{ name: events }]
