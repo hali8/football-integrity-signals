@@ -97,6 +97,12 @@ def download_dir() -> Path:
     return data_dir() / "download"
 
 
+def json_dir() -> Path:
+    """Reference tables as published, read directly by dbt via read_json_auto."""
+    _guard("json_dir", "warehouse inputs, one stage upstream of the marts")
+    return data_dir() / "json"
+
+
 def parquet_dir() -> Path:
     """Our own normalised parquet output, the input to dbt."""
     _guard("parquet_dir", "the dbt input, one stage upstream of the marts")

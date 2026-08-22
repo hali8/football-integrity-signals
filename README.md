@@ -9,12 +9,19 @@ match, and gives a duckdb/dbt warehouse to build match-integrity signals on top 
 
 Each stage reads only the output of the one before it:
 
-| Stage               | Reads            | Writes                    |
-| ------------------- | ---------------- | ------------------------- |
-| `fis-fetch-wyscout` | upstream GitHub  | `data/download/`          |
-| `src/fis/ingest/`   | `data/download/` | `data/parquet/`           |
-| `warehouse/`        | `data/parquet/`  | marts (duckdb)            |
-| `analysis/`         | marts            | figures, tables, findings |
+| Stage               | Reads                         | Writes                         |
+| ------------------- | ----------------------------- | ------------------------------ |
+| `fis-fetch-wyscout` | upstream GitHub, Figshare     | `data/download/`, `data/json/` |
+| `src/fis/ingest/`   | `data/download/`              | `data/parquet/`                |
+| `warehouse/`        | `data/parquet/`, `data/json/` | marts (duckdb)                 |
+| `analysis/`         | marts                         | figures, tables, findings      |
+
+The dimension files are read in place; only the event data justified a
+materialisation stage. Events need kloppy to decode them and there are 1941
+files of it, so it earns a Python step and a typed parquet layer. Players,
+teams, referees, coaches and competitions are a few megabytes of JSON that
+duckdb reads directly, and flattening their nested structure is staging-model
+work that belongs in SQL where it can be reviewed.
 
 **Nothing in `analysis/` touches raw JSON — a missing column there means a missing
 dbt model, not a backwards reach.**
@@ -125,11 +132,15 @@ existing `data/` directory to share it.
 
 ```
 data/
-├── download/wyscout/processed-v2/files/*.json   # upstream, immutable, disposable
+├── download/wyscout/processed-v2/files/*.json   # upstream events, immutable
+├── json/                                        # upstream dimensions, read in place
+│   ├── matches_*.json  players.json  teams.json
+│   ├── referees.json   coaches.json  competitions.json
+│   └── eventid2name.csv  tags2name.csv
 └── parquet/events_<match_id>.parquet            # our normalised output
 ```
 
-Both are gitignored — everything under `data/` is reproducible from the two
+All three are gitignored — everything under `data/` is reproducible from the two
 commands above.
 
 ## Dataset
@@ -150,7 +161,53 @@ half-populated directory that a later run mistakes for complete.
 fis-fetch-wyscout --commit <sha>          # one-off override
 fis-fetch-wyscout --force                 # re-download regardless
 fis-fetch-wyscout --dest /scratch/wyscout # somewhere else entirely
+fis-fetch-wyscout --no-reference          # skip the Figshare tables
+fis-fetch-wyscout --no-audit              # skip the post-download checks
 ```
+
+### Reference tables
+
+The same fetch also pulls the dimensions from the original Figshare collection
+published with Pappalardo et al. (2019), into `data/json/`:
+
+`matches_*.json` (dates, teams, scores, referee assignments), `players.json`,
+`teams.json`, `competitions.json`, `referees.json`, `coaches.json`, plus
+`eventid2name.csv` and `tags2name.csv` for decoding the numeric event and tag
+ids. Roughly 2.7 MB in total.
+
+Each file is pinned by Figshare **file id and md5**, and the checksum is verified
+after download — a silently republished file fails loudly rather than changing
+your results. koenvo mirrors four of these but not competitions, referees or
+coaches, so all of them come from Figshare rather than splitting provenance.
+
+`events.zip` is deliberately not fetched: it holds the same events as the 1941
+per-match files, and expands past 1 GB.
+
+**`referees.json` is published truncated.** It ends mid-record, so duckdb cannot
+read it at all. The fetcher detects this specific damage, recovers all 627
+records — salvaging the final partial one, which keeps every field except its
+last — and preserves the original as `referees.as-published.json`. The repair is
+lazy: a file that parses is left exactly as downloaded, so an upstream fix makes
+it a no-op.
+
+### Post-download audit
+
+Checksums verify transfer, not content. After fetching, `audit("wyscout")` in
+[src/fis/data/audit.py](src/fis/data/audit.py) checks that every file parses and
+that ids referenced by one file exist in another, reporting what any gap costs:
+
+```
+Data audit: 0 error(s), 2 warning(s), 6 checks.
+  [WARN] referee-coverage: 10 of 637 referenced officials have no entry
+         impact: 95 of 7942 assignments (1.2%) — a referee dimension will not resolve them.
+  [WARN] coach-coverage: 3 of 211 referenced coaches have no entry
+         impact: 13 of 3645 match sides (0.4%) — coach names will be null.
+```
+
+Both gaps are upstream data, not our processing. The audit never fails the
+fetch — the data is still worth having — but the number is visible, so it cannot
+drift unnoticed. Checks are registered per dataset, so a second source is a new
+entry in `REGISTRY`.
 
 ## Ingest
 

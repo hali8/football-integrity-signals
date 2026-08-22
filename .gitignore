@@ -226,8 +226,10 @@ __marimo__/
 # has "downloads/" (plural), which does NOT match data/download/.
 data/download/
 data/parquet/
+data/json/
 data/**/*.parquet
 .fis-wyscout-*/
+.fis-figshare-*/
 
 # dbt build artefacts and the local duckdb file
 warehouse/target/
@@ -241,3 +243,6 @@ warehouse/.user.yml
 *.swp
 *.swo
 *~
+
+# Personal working notes, not part of the repo
+TODO.md

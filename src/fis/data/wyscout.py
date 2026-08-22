@@ -22,6 +22,8 @@ from pathlib import Path
 
 import httpx
 
+from fis.data import figshare
+from fis.data.audit import audit, format_report
 from fis.paths import ensure, wyscout_dir
 
 REPO = "koenvo/wyscout-soccer-match-event-dataset"
@@ -158,13 +160,36 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--force", action="store_true", help="re-download even if present")
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
+    parser.add_argument(
+        "--no-reference",
+        action="store_true",
+        help="skip the Figshare reference tables (players, teams, referees, ...)",
+    )
+    parser.add_argument("--no-audit", action="store_true", help="skip the post-download checks")
+    parser.add_argument(
+        "--audit-verbose", action="store_true", help="list checks that passed, not just findings"
+    )
     args = parser.parse_args(argv)
 
     try:
         fetch(args.dest, commit=args.commit, force=args.force, quiet=args.quiet)
+        if not args.no_reference:
+            # Different source, different pin, so it keeps its own stamp -- but one
+            # command, because a checkout without the dimensions is not much use.
+            if not args.quiet:
+                print()
+            figshare.fetch(force=args.force, quiet=args.quiet)
     except (httpx.HTTPError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    # Checksums prove the bytes arrived intact; they say nothing about whether the
+    # content is usable. Reported, never fatal -- the data is still worth having.
+    if not args.no_reference and not args.no_audit:
+        findings = audit("wyscout")
+        if not args.quiet:
+            print()
+            print(format_report(findings, verbose=args.audit_verbose))
     return 0
 
 
