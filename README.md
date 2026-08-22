@@ -223,13 +223,20 @@ so it follows the same path resolution as the Python code.
 ```bash
 pixi run dbt-debug     # verify the connection and project config
 pixi run build         # dbt build
+pixi run dbt <cmd>     # anything else: dbt ls, dbt test, dbt show ...
 ```
 
-Run dbt from the repository root. Its relative paths — the duckdb file in
-`warehouse/profiles.yml` and the parquet glob in `_sources.yml` — resolve against
-the working directory rather than the project directory, and pixi always runs
-tasks from the manifest directory. The pixi tasks pass `--project-dir warehouse
---profiles-dir warehouse` for you.
+dbt lives in the pixi environment, so reach it with `pixi run` or from inside
+`pixi shell` — there is no dbt on your `PATH` otherwise. `DBT_PROJECT_DIR` and
+`DBT_PROFILES_DIR` are set in `[activation.env]`, so dbt finds `warehouse/`
+without any flags.
+
+**Run it from the repository root.** Those two variables are relative, and so are
+the paths dbt reads out of the project — the duckdb file in `profiles.yml` and
+the parquet glob in `_sources.yml`. All of them resolve against the working
+directory, and the repository root is where they are correct. `pixi run` handles
+this for you by always starting from the manifest directory; inside `pixi shell`
+it is yours to get right.
 
 ## Analysis
 

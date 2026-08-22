@@ -12,10 +12,12 @@ DBT_PROJECT_DIR = "warehouse"
 [tasks]
 fetch = "fis-fetch-wyscout"
 ingest = "fis-ingest-wyscout"
-# dbt's relative paths resolve against the working directory; pixi always runs
-# tasks from the manifest directory, which is the repository root.
-dbt-debug = "dbt debug --project-dir warehouse --profiles-dir warehouse"
-build = "dbt build --project-dir warehouse --profiles-dir warehouse"
+# Project and profile discovery come from [activation.env] above. dbt's relative
+# paths -- the duckdb file in profiles.yml, the parquet glob in _sources.yml --
+# resolve against the working directory, and pixi runs tasks from the manifest
+# directory, which is the repository root, where those values are correct.
+dbt-debug = "dbt debug"
+build = "dbt build"
 # Includes the stage-rule import bans under src/fis/analysis/.
 lint = "ruff check src"
 # Run once per clone: installs .git/hooks/pre-commit.
