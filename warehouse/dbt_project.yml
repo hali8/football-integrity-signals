@@ -30,3 +30,7 @@ models:
     marts:
       +materialized: table
       +schema: marts
+    # Checks about the warehouse itself, kept out of the staging/marts flow.
+    audit:
+      +materialized: table
+      +schema: audit
