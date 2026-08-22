@@ -273,19 +273,23 @@ data does.
 
 ## Warehouse
 
-A self-contained duckdb + dbt project lives in `warehouse/`. Three source groups,
-all resolved through `external_location` honouring `FIS_DATA_DIR`, so they follow
-the same path resolution as the Python code:
+A self-contained duckdb + dbt project lives in `warehouse/`, resolving everything
+through `external_location` honouring `FIS_DATA_DIR`, so it follows the same path
+resolution as the Python code.
 
-| Source group | Read as          | Tables                                                               |
-| ------------ | ---------------- | -------------------------------------------------------------------- |
-| `raw`        | parquet glob     | `events`                                                             |
-| `reference`  | `read_json_auto` | `matches`, `players`, `teams`, `competitions`, `referees`, `coaches` |
-| `lookup`     | `read_csv_auto`  | `eventid2name`, `tags2name`                                          |
+One source group, `wyscout`, because that is where all of it comes from — the
+events included. kloppy transcoded them and the orientation was transformed, but
+no fact in the warehouse originated with us.
 
-`reference.matches` overrides the group's location to glob the per-league files
-with `union_by_name=true`, because `groupName` appears only in the tournament
-files.
+| Table                                                                | Read as                        |
+| -------------------------------------------------------------------- | ------------------------------ |
+| `events`                                                             | parquet glob, `data/parquet/`  |
+| `matches`, `players`, `teams`, `competitions`, `referees`, `coaches` | `read_json_auto`, `data/json/` |
+| `eventid2name`, `tags2name`                                          | `read_csv_auto`, `data/json/`  |
+
+The group's default location is `read_json_auto`; `events` and the two CSVs
+override it, and `matches` also adds `union_by_name=true` because `groupName`
+appears only in the tournament files.
 
 ```bash
 pixi run dbt-debug     # verify the connection and project config

@@ -10,29 +10,29 @@ sources:
   # from there './data' *is* fis.paths.data_dir(), which resolves to
   # <the directory holding pyproject.toml>/data. pixi always starts tasks in the
   # manifest directory, so this holds however you invoke them.
-  - name: raw
+  - name: wyscout
     description: >
-      Match events, normalised from Wyscout JSON by kloppy and written one
-      parquet file per match. This is the only stage that earns a
-      materialisation: 1941 files that need kloppy to decode them.
-    meta:
-      external_location: "{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet"
-    tables:
-      - name: events
-        data_tests: [not_empty]
-        description: One row per event, with match_id added by the ingest step.
-        columns:
-          - name: match_id
-            description: Wyscout match id. Joins to reference.matches.wyId.
-            data_tests: [not_null]
-
-  - name: reference
-    description: >
-      Dimension tables from the Figshare collection published with
-      Pappalardo et al. (2019), read in place as JSON.
+      Everything published by Wyscout for this dataset. The events arrive as
+      per-match parquet because kloppy has to decode them first; the dimensions
+      are read as published. Different formats, one provenance -- we transcoded
+      the events, we did not originate any of these facts.
     meta:
       external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.json')"
     tables:
+      - name: events
+        meta:
+          external_location: "{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet"
+        data_tests: [not_empty]
+        description: >
+          One row per event, decoded from Wyscout V2 JSON by kloppy. Two things
+          differ from the published feed: coordinates are transformed to
+          ACTION_EXECUTING_TEAM orientation, and match_id is added, because
+          kloppy's frame covers a single match and carries no match id.
+        columns:
+          - name: match_id
+            description: Wyscout match id. Joins to wyscout.matches.wyId.
+            data_tests: [not_null]
+
       - name: matches
         data_tests: [not_empty]
         description: >
@@ -54,7 +54,7 @@ sources:
               Array of {refereeId, role}, role being referee, firstAssistant,
               secondAssistant or fourthOfficial. The officials lens starts here.
           - name: competitionId
-            description: Joins to reference.competitions.wyId.
+            description: Joins to wyscout.competitions.wyId.
             data_tests: [not_null]
 
       - name: players
@@ -100,22 +100,21 @@ sources:
           - name: wyId
             data_tests: [unique, not_null]
 
-  - name: lookup
-    description: >
-      Id-to-name maps for decoding the numeric event and tag ids carried by
-      the event data, e.g. tag 1802 is "not accurate".
-    meta:
-      external_location: "read_csv_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.csv')"
-    tables:
       - name: eventid2name
         data_tests: [not_empty]
-        description: eventId and subEventId to their labels.
+        description: eventId and subEventId to their labels. CSV, not JSON.
+        meta:
+          external_location: "read_csv_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.csv')"
         columns:
           - name: event
             data_tests: [not_null]
       - name: tags2name
         data_tests: [not_empty]
-        description: Tag id to label and description.
+        description: >
+          Tag id to label and description, e.g. 1802 is "not accurate".
+          CSV, not JSON.
+        meta:
+          external_location: "read_csv_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.csv')"
         columns:
           - name: Tag
             data_tests: [unique, not_null]
