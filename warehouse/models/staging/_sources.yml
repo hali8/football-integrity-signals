@@ -1,17 +1,17 @@
 version: 2
 
 sources:
-  # FIS_DATA_DIR must match what fis.paths.data_dir() resolves to. The default is
-  # correct when dbt is invoked from the repository root, which is what the pixi
-  # tasks guarantee -- these paths are relative to the working directory, not to
-  # the dbt project directory.
+  # FIS_DATA_DIR is exported by the pixi tasks from fis.paths.data_dir(), the
+  # single source of truth for where data lives. No default here on purpose: a
+  # default would be the same fact written down twice, free to drift. Outside
+  # pixi:  export FIS_DATA_DIR=$(fis-data-dir)
   - name: raw
     description: >
       Match events, normalised from Wyscout JSON by kloppy and written one
       parquet file per match. This is the only stage that earns a
       materialisation: 1941 files that need kloppy to decode them.
     meta:
-      external_location: "{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet"
+      external_location: "{{ env_var('FIS_DATA_DIR') }}/parquet/{name}_*.parquet"
     tables:
       - name: events
         data_tests: [not_empty]
@@ -28,7 +28,7 @@ sources:
       duckdb reads them directly, and their nested structure is staging-model
       work rather than something to flatten in Python.
     meta:
-      external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.json')"
+      external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR') }}/json/{name}.json')"
     tables:
       - name: matches
         data_tests: [not_empty]
@@ -37,7 +37,7 @@ sources:
           assignments, and per-team lineups. Glob across the per-league files;
           union_by_name because groupName appears only in tournament files.
         meta:
-          external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/matches_*.json', union_by_name=true)"
+          external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR') }}/json/matches_*.json', union_by_name=true)"
         columns:
           - name: wyId
             description: Match id. Joins to raw.events.match_id.
@@ -102,7 +102,7 @@ sources:
       Id-to-name maps for decoding the numeric event and tag ids carried by
       the event data, e.g. tag 1802 is "not accurate".
     meta:
-      external_location: "read_csv_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.csv')"
+      external_location: "read_csv_auto('{{ env_var('FIS_DATA_DIR') }}/json/{name}.csv')"
     tables:
       - name: eventid2name
         data_tests: [not_empty]

@@ -120,3 +120,16 @@ def ensure(path: Path) -> Path:
     """mkdir -p, returning the path so it can be used inline."""
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def main() -> int:
+    """Print the resolved data root, so non-Python callers can use it.
+
+    dbt needs the same directory this module resolves, and Jinja cannot call
+    Python. Rather than dbt keeping its own default and a comment asking the two
+    to stay in step, the pixi tasks export ``FIS_DATA_DIR=$(fis-data-dir)`` and
+    ``_sources.yml`` reads that with no default of its own. One source of truth,
+    and an explicit FIS_DATA_DIR still wins because data_dir() honours it.
+    """
+    print(data_dir())
+    return 0

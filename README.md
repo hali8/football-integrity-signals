@@ -298,6 +298,33 @@ dbt lives in the pixi environment, so reach it with `pixi run` or from inside
 `DBT_PROFILES_DIR` are set in `[activation.env]`, so dbt finds `warehouse/`
 without any flags.
 
+### Where the warehouse looks for data
+
+`fis.paths.data_dir()` is the single source of truth. dbt cannot call Python, so
+the pixi tasks export the value and `_sources.yml` reads it:
+
+```toml
+build = "FIS_DATA_DIR=$(fis-data-dir) dbt build"
+```
+
+`_sources.yml` uses `{{ env_var('FIS_DATA_DIR') }}` with **no default**. A default
+would be the same fact written down in two places, drifting apart with only a
+comment asking them to agree. Unset, dbt stops with
+`Env var required but not provided: 'FIS_DATA_DIR'` rather than quietly reading
+somewhere else.
+
+Outside pixi — the package installed with pip, dbt run by hand — the same one
+line works, because `fis-data-dir` is a console script that ships with the
+package:
+
+```bash
+export FIS_DATA_DIR=$(fis-data-dir)
+dbt build --project-dir warehouse --profiles-dir warehouse
+```
+
+Setting `FIS_DATA_DIR` yourself still wins everywhere: `data_dir()` honours it
+first, so `fis-data-dir` echoes back what you set.
+
 **Run it from the repository root.** Those two variables are relative, and so are
 the paths dbt reads out of the project — the duckdb file in `profiles.yml` and
 the parquet glob in `_sources.yml`. All of them resolve against the working
