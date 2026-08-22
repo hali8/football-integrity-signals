@@ -1,9 +1,109 @@
+version: 2
+
 sources:
+  # FIS_DATA_DIR must match what fis.paths.data_dir() resolves to. The default is
+  # correct when dbt is invoked from the repository root, which is what the pixi
+  # tasks guarantee -- these paths are relative to the working directory, not to
+  # the dbt project directory.
   - name: raw
-    # FIS_DATA_DIR must match what fis.paths.data_dir() resolves to; the default
-    # is correct when dbt is invoked from the project root.
+    description: >
+      Match events, normalised from Wyscout JSON by kloppy and written one
+      parquet file per match. This is the only stage that earns a
+      materialisation: 1941 files that need kloppy to decode them.
     meta:
-      {
-        external_location: "{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet",
-      }
-    tables: [{ name: events }]
+      external_location: "{{ env_var('FIS_DATA_DIR', 'data') }}/parquet/{name}_*.parquet"
+    tables:
+      - name: events
+        description: One row per event, with match_id added by the ingest step.
+        columns:
+          - name: match_id
+            description: Wyscout match id. Joins to reference.matches.wyId.
+            data_tests: [not_null]
+
+  - name: reference
+    description: >
+      Dimension tables from the Figshare collection published with
+      Pappalardo et al. (2019), read in place as JSON. Small enough that
+      duckdb reads them directly, and their nested structure is staging-model
+      work rather than something to flatten in Python.
+    meta:
+      external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.json')"
+    tables:
+      - name: matches
+        description: >
+          One row per match: date, competition, venue, score, referee
+          assignments, and per-team lineups. Glob across the per-league files;
+          union_by_name because groupName appears only in tournament files.
+        meta:
+          external_location: "read_json_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/matches_*.json', union_by_name=true)"
+        columns:
+          - name: wyId
+            description: Match id. Joins to raw.events.match_id.
+            data_tests: [unique, not_null]
+          - name: teamsData
+            description: >
+              MAP keyed by team id, each value holding side, score, coachId and
+              the formation with lineup and bench arrays. Unnested in staging.
+          - name: referees
+            description: >
+              Array of {refereeId, role}, role being referee, firstAssistant,
+              secondAssistant or fourthOfficial. The officials lens starts here.
+          - name: competitionId
+            description: Joins to reference.competitions.wyId.
+            data_tests: [not_null]
+
+      - name: players
+        description: Player identities, with role and position.
+        columns:
+          - name: wyId
+            data_tests: [unique, not_null]
+          - name: role
+            description: STRUCT of code2, code3 and name, e.g. GK / Goalkeeper.
+
+      - name: teams
+        description: Team lookup, club and national.
+        columns:
+          - name: wyId
+            data_tests: [unique, not_null]
+
+      - name: competitions
+        description: The seven competitions covered by the dataset.
+        columns:
+          - name: wyId
+            data_tests: [unique, not_null]
+
+      - name: referees
+        description: >
+          Referee identities. Published truncated; the fetcher recovers all 627
+          records and keeps the original as referees.as-published.json.
+          10 officials referenced by matches have no entry here -- 95 of 7942
+          assignments, so expect nulls when joining.
+        columns:
+          - name: wyId
+            data_tests: [unique, not_null]
+
+      - name: coaches
+        description: >
+          Coach identities. 3 coaches referenced by matches have no entry
+          here -- 13 of 3645 match sides.
+        columns:
+          - name: wyId
+            data_tests: [unique, not_null]
+
+  - name: lookup
+    description: >
+      Id-to-name maps for decoding the numeric event and tag ids carried by
+      the event data, e.g. tag 1802 is "not accurate".
+    meta:
+      external_location: "read_csv_auto('{{ env_var('FIS_DATA_DIR', 'data') }}/json/{name}.csv')"
+    tables:
+      - name: eventid2name
+        description: eventId and subEventId to their labels.
+        columns:
+          - name: event
+            data_tests: [not_null]
+      - name: tags2name
+        description: Tag id to label and description.
+        columns:
+          - name: Tag
+            data_tests: [unique, not_null]

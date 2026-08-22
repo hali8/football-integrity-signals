@@ -21,6 +21,7 @@ which is where a reviewer expects to find them. See TODO.md.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,45 @@ def check_files_parse(root: Path) -> list[Finding]:
             )
         ]
     return [Finding(OK, "files-parse", "all reference files parse")]
+
+
+#: A literal backslash-u-XXXX left in the text. The publisher double-escaped
+#: non-ASCII, so json parsing yields the escape sequence rather than the
+#: character: "Bayern M\\u00fcnchen" instead of "Bayern München".
+_LITERAL_ESCAPE = re.compile(r"\\u[0-9a-fA-F]{4}")
+
+
+def check_unicode_escapes(root: Path) -> list[Finding]:
+    """Names published double-escaped, so the accents never decode."""
+    worst: list[tuple[str, int, int]] = []
+    for path in sorted(root.glob("*.json")):
+        if path.name.startswith(".") or ".as-published" in path.name:
+            continue
+        try:
+            records = json.loads(path.read_text(encoding="utf8"))
+        except ValueError:
+            continue  # reported by check_files_parse
+        if not isinstance(records, list):
+            continue
+        hits = sum(1 for r in records if _LITERAL_ESCAPE.search(json.dumps(r)))
+        if hits:
+            worst.append((path.name, hits, len(records)))
+
+    if not worst:
+        return [Finding(OK, "unicode-escapes", "no double-escaped names")]
+
+    affected = sum(h for _, h, _ in worst)
+    total = sum(t for _, _, t in worst)
+    detail = ", ".join(f"{n} {h}/{t}" for n, h, t in sorted(worst, key=lambda x: -x[1])[:4])
+    return [
+        Finding(
+            WARNING,
+            "unicode-escapes",
+            f"{affected} of {total} records across {len(worst)} files carry literal \\uXXXX",
+            f"{100 * affected / total:.0f}% of names will not render "
+            f'("Bayern M\\u00fcnchen" not "Bayern München"); decode in staging. {detail}',
+        )
+    ]
 
 
 def _coverage(
@@ -206,6 +246,7 @@ def check_match_event_coverage(root: Path) -> list[Finding]:
 REGISTRY: dict[str, tuple[CheckFn, ...]] = {
     "wyscout": (
         check_files_parse,
+        check_unicode_escapes,
         check_referee_coverage,
         check_team_coverage,
         check_coach_coverage,
