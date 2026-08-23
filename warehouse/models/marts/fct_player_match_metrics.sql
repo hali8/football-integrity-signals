@@ -21,43 +21,48 @@ pivoted as (
         player_id,
         team_id,
 
+        -- Counts are coalesced to 0: a filtered sum matching no row returns
+        -- null, which would say "unknown" about a player who simply did not do
+        -- it. Rates below stay null -- there the distinction is real.
         sum(attempts) as actions,
 
         -- Passes include goal kicks: the pass happened and is countable. What
         -- goal kicks lack is a recorded outcome, which is a denominator
         -- question, handled below.
-        sum(attempts) filter (where is_pass) as passes,
-        sum(attempts_with_recorded_outcome + attempts_with_inferred_outcome)
-            filter (where is_pass) as passes_with_outcome,
-        sum(successes_recorded + successes_inferred) filter (where is_pass) as passes_completed,
-        sum(attempts_with_inferred_outcome) filter (where is_pass) as passes_outcome_inferred,
+        coalesce(sum(attempts) filter (where is_pass), 0) as passes,
+        coalesce(sum(attempts_with_recorded_outcome + attempts_with_inferred_outcome)
+            filter (where is_pass), 0) as passes_with_outcome,
+        coalesce(sum(successes_recorded + successes_inferred)
+            filter (where is_pass), 0) as passes_completed,
+        coalesce(sum(attempts_with_inferred_outcome)
+            filter (where is_pass), 0) as passes_outcome_inferred,
         sum(crosses) as crosses,
 
         -- Spec definition: tackle, interception, clearance -- counting an
         -- interception recorded as a clearance once. The clearance-hosted leaf
         -- is left out because its host is already in the sum.
-        sum(attempts) filter (
+        coalesce(sum(attempts) filter (
             where action_type in (
                 'tackle', 'clearance',
                 'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
             )
-        ) as defensive_actions,
-        sum(attempts_with_recorded_outcome) filter (
+        ), 0) as defensive_actions,
+        coalesce(sum(attempts_with_recorded_outcome) filter (
             where action_type in (
                 'tackle', 'clearance',
                 'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
             )
-        ) as defensive_actions_with_outcome,
-        sum(successes_recorded) filter (
+        ), 0) as defensive_actions_with_outcome,
+        coalesce(sum(successes_recorded) filter (
             where action_type in (
                 'tackle', 'clearance',
                 'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
             )
-        ) as defensive_actions_successful,
+        ), 0) as defensive_actions_successful,
 
         -- All interceptions, however kloppy recorded them. Not the same set as
         -- defensive_actions, deliberately.
-        sum(attempts) filter (where action_group = 'interception') as interceptions,
+        coalesce(sum(attempts) filter (where action_group = 'interception'), 0) as interceptions,
 
         sum(in_defensive_third) as touches_in_defensive_third,
         -- Weighted by actions that have a position, so goal kicks -- whose

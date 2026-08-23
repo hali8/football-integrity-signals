@@ -26,25 +26,34 @@ models:
               arguments:
                 to: ref('stg_players')
                 field: player_id
+      # Counts are never null. A player who did none of something did none of
+      # it; null would claim we do not know. Only the rates below are nullable.
+      - name: actions
+        data_tests: [not_null]
       - name: passes
         description: >
           Every pass credited to the player, goal kicks included — the pass was
           played whether or not Wyscout scored it.
+        data_tests: [not_null]
       - name: passes_with_outcome
         description: >
           The pass_completion_pct denominator: passes Wyscout tagged, plus short
           goal kicks whose outcome we infer. Below `passes` by the long goal kicks.
+        data_tests: [not_null]
       - name: passes_completed
         description: Recorded completions plus inferred ones, over the same set.
+        data_tests: [not_null]
       - name: passes_unjudged
         description: >
           Long goal kicks. Wyscout never tags a goal kick for accuracy and a
           contested long ball is not safely inferable, so they are counted but
           not rated.
+        data_tests: [not_null]
       - name: passes_outcome_inferred
         description: >
           How much of passes_completed is derived rather than recorded — short
           goal kicks only. Subtract it to get the recorded-only figure.
+        data_tests: [not_null]
       - name: pass_completion_pct
         description: >
           passes_completed / passes_with_outcome. Null where nothing was judged,
@@ -54,20 +63,24 @@ models:
           Counted from the qualifier list, not pass_type — that column keeps
           only the last qualifier and shows 26,444 crosses where there are
           62,169.
+        data_tests: [not_null]
       - name: interceptions
         description: >
           Every interception, whichever event kloppy built it from. Deliberately
           a different set from defensive_actions.
+        data_tests: [not_null]
       - name: defensive_actions
         description: >
           Tackles, interceptions and clearances, per the spec definition, with an
           interception recorded as a clearance counted once rather than twice.
+        data_tests: [not_null]
       - name: defensive_action_success_pct
         description: >
           Share of defensive actions Wyscout scored that succeeded. Nothing here
           is inferred.
       - name: touches_in_defensive_third
         description: Actions starting at x < 1/3, with x towards the attacked goal.
+        data_tests: [not_null]
       - name: mean_action_x
         description: >
           Mean starting x over the player's actions that have a position, 0 own
