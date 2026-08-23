@@ -1,0 +1,113 @@
+version: 2
+
+models:
+  - name: int_player_match_actions
+    description: >
+      One row per player, match and action type, with attempts and successes.
+      Action types are this project's grouping, not kloppy's taxonomy — the
+      mapping lives in the model so no metric can quietly use a different one.
+    data_tests:
+      - not_empty
+      - unique_combination:
+          arguments:
+            columns: [match_id, player_id, action_type]
+    columns:
+      - name: match_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+      - name: player_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_players')
+                field: player_id
+      - name: action_type
+        description: >
+          The leaf: pass, goal_kick_short, goal_kick_long, shot, clearance,
+          tackle, duel, recovery, one of the interception_as_* kinds, or the
+          lowercased event type. A tackle is a DUEL carrying Wyscout tag 1601,
+          so it is a subset of duels, counted separately. Leaves exist where
+          counting two things as one would hide something.
+        data_tests: [not_null]
+      - name: action_group
+        description: >
+          The rollup — pass covers the goal-kick leaves, interception covers the
+          interception_as_* leaves, everything else is its own leaf. A metric
+          names a leaf or a group, never a hardcoded list.
+        data_tests: [not_null]
+      - name: is_pass
+        description: True for pass and both goal-kick leaves.
+        data_tests: [not_null]
+      - name: attempts
+        data_tests: [not_null]
+      - name: successes
+        description: >
+          kloppy's own result. Null, not 0, where it records no outcome for that
+          action type — a rate over them would be a rate over nothing.
+      - name: attempts_with_recorded_outcome
+        description: Attempts Wyscout scored with tag 1801 or 1802.
+        data_tests: [not_null]
+      - name: successes_recorded
+        description: >
+          Of those, the accurate ones. The only outcome clearances keep, since
+          kloppy hardcodes their result to None.
+        data_tests: [not_null]
+      - name: attempts_with_inferred_outcome
+        description: >
+          Short goal kicks only, where the outcome is derived from whether the
+          same team makes the next deliberate action. Zero for every other leaf.
+        data_tests: [not_null]
+      - name: successes_inferred
+        description: >
+          Derived, never recorded. Kept apart from successes_recorded so a
+          consumer can always work from what Wyscout actually scored.
+        data_tests: [not_null]
+      - name: attempts_with_position
+        description: >
+          Attempts with a start coordinate. Below `attempts` for goal kicks,
+          whose start Wyscout writes as a corner-flag sentinel.
+        data_tests: [not_null]
+
+  - name: int_player_match_minutes
+    description: >
+      Minutes played per player-match, from lineups and substitutions. Match
+      length comes from the events, not a nominal 90 — regular matches here run
+      87.9 to 107.3 minutes and average 95.0. Unused substitutes have no row, so
+      a per-90 rate cannot divide by zero.
+    data_tests:
+      - not_empty
+      - unique_combination:
+          arguments:
+            columns: [match_id, player_id]
+    columns:
+      - name: match_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+      - name: player_id
+        description: >
+          Relationship warns: 23 named players have no record in stg_players,
+          an upstream gap rather than our processing.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_players')
+                field: player_id
+              config:
+                severity: warn
+      - name: minutes_played
+        description: >
+          Capped at the match's own length. full_time is rounded to 0.1 before
+          the cap so a full-match player lands exactly on it.
+        data_tests: [not_null]
+      - name: started
+        data_tests: [not_null]

@@ -1,0 +1,93 @@
+{#
+  One row per player-match. A thin slice: four metrics, enough to prove the
+  spine, not the full set. Definitions are in the README -- the SQL implements
+  them, it does not decide them.
+
+  Rates are null, not 0, where the denominator is 0, so "no attempts" is
+  distinguishable from "attempted and never succeeded".
+#}
+{{ config(materialized = 'table') }}
+
+with actions as (
+
+    select * from {{ ref('int_player_match_actions') }}
+
+),
+
+pivoted as (
+
+    select
+        match_id,
+        player_id,
+        team_id,
+
+        sum(attempts) as actions,
+
+        -- Passes include goal kicks: the pass happened and is countable. What
+        -- goal kicks lack is a recorded outcome, which is a denominator
+        -- question, handled below.
+        sum(attempts) filter (where is_pass) as passes,
+        sum(attempts_with_recorded_outcome + attempts_with_inferred_outcome)
+            filter (where is_pass) as passes_with_outcome,
+        sum(successes_recorded + successes_inferred) filter (where is_pass) as passes_completed,
+        sum(attempts_with_inferred_outcome) filter (where is_pass) as passes_outcome_inferred,
+        sum(crosses) as crosses,
+
+        -- Spec definition: tackle, interception, clearance -- counting an
+        -- interception recorded as a clearance once. The clearance-hosted leaf
+        -- is left out because its host is already in the sum.
+        sum(attempts) filter (
+            where action_type in (
+                'tackle', 'clearance',
+                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
+            )
+        ) as defensive_actions,
+        sum(attempts_with_recorded_outcome) filter (
+            where action_type in (
+                'tackle', 'clearance',
+                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
+            )
+        ) as defensive_actions_with_outcome,
+        sum(successes_recorded) filter (
+            where action_type in (
+                'tackle', 'clearance',
+                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
+            )
+        ) as defensive_actions_successful,
+
+        -- All interceptions, however kloppy recorded them. Not the same set as
+        -- defensive_actions, deliberately.
+        sum(attempts) filter (where action_group = 'interception') as interceptions,
+
+        sum(in_defensive_third) as touches_in_defensive_third,
+        -- Weighted by actions that have a position, so goal kicks -- whose
+        -- start coordinate Wyscout does not record -- neither move nor dilute it.
+        sum(attempts_with_position * mean_start_x)
+            / nullif(sum(attempts_with_position), 0) as mean_action_x
+
+    from actions
+    group by match_id, player_id, team_id
+
+)
+
+select
+    match_id,
+    player_id,
+    team_id,
+    actions,
+    passes,
+    passes_completed,
+    passes_with_outcome,
+    -- Long goal kicks, which Wyscout does not score and we do not infer.
+    passes - passes_with_outcome as passes_unjudged,
+    passes_outcome_inferred,
+    round(passes_completed * 100.0 / nullif(passes_with_outcome, 0), 2) as pass_completion_pct,
+    crosses,
+    interceptions,
+    defensive_actions,
+    round(
+        defensive_actions_successful * 100.0 / nullif(defensive_actions_with_outcome, 0), 2
+    ) as defensive_action_success_pct,
+    touches_in_defensive_third,
+    round(mean_action_x, 4) as mean_action_x
+from pivoted

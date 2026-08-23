@@ -404,6 +404,112 @@ anyway and this test becomes partly redundant. What it still catches is the case
 reads `[]` as 0 rows rather than raising, so models build, marts come out empty,
 and nothing else complains.
 
+## Metric definitions
+
+**Drafted, not decided.** The SQL implements these; it does not choose them.
+Anything below marked _open_ is a judgement that has not been made yet.
+
+| Metric                         | Definition                                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `passes`                       | Every pass credited to the player, goal kicks included.                                                |
+| `passes_with_outcome`          | Passes Wyscout tagged for accuracy, plus short goal kicks whose outcome is inferred.                   |
+| `passes_completed`             | Recorded completions plus inferred ones, over that same set.                                           |
+| `passes_unjudged`              | `passes − passes_with_outcome`. Long goal kicks.                                                       |
+| `passes_outcome_inferred`      | How much of `passes_completed` is derived rather than recorded.                                        |
+| `pass_completion_pct`          | `passes_completed / passes_with_outcome`, null when nothing was judged.                                |
+| `crosses`                      | Events whose qualifier list contains `Pass:CROSS`.                                                     |
+| `interceptions`                | Every interception, whichever event kloppy built it from.                                              |
+| `defensive_actions`            | Tackles, interceptions and clearances. An interception recorded as a clearance is one action, not two. |
+| `defensive_action_success_pct` | Share of defensive actions Wyscout scored that succeeded — see below. Nothing here is inferred.        |
+| `touches_in_defensive_third`   | Actions starting at `x < 1/3`.                                                                         |
+| `mean_action_x`                | Mean starting `x` over the player's actions that have a position.                                      |
+
+A **tackle** is a `DUEL` carrying Wyscout tag 1601 `sliding_tackle`. Wyscout has
+no separate tackle event, so tackles are a subset of duels and the other duels
+are counted separately as `duel`.
+
+**Crosses must be counted from `qualifiers`, never from `pass_type`.** kloppy's
+flat column keeps only the last qualifier it attached, so a cross tagged "high"
+appears as `HIGH_PASS`: 26,444 crosses instead of 62,169.
+
+`x` runs 0 at the player's own goal-line to 1 at the opponent's, because ingest
+transforms every event to `ACTION_EXECUTING_TEAM` orientation. So
+`touches_in_defensive_third` and `mean_action_x` are comparable across teams and
+halves without further adjustment.
+
+### Goal kicks
+
+**Wyscout never scores a goal kick for accuracy.** All 31,797 carry neither tag
+1801 nor 1802, and no other set piece is affected — throw-ins, corners and free
+kicks are tagged like open play. It is a convention, not a gap, and treating the
+absence as failure would record every goal kick a keeper takes as a failed pass.
+
+A goal kick is still a pass, so it counts in `passes`. What it lacks is an
+outcome, which is a denominator question. Two kinds, split on where the ball
+lands, because they behave differently:
+
+|                                 | Retained by the kicking team |
+| ------------------------------- | ---------------------------- |
+| lands before `x = 0.3` — 7,434  | 95–97%                       |
+| lands beyond `x = 0.4` — 21,572 | 31–57%                       |
+
+A short goal kick is an ordinary pass to a defender and has a determinate
+outcome. A long one is a contested 50/50 and does not.
+
+So short goal kicks get an **inferred** outcome — completed if the kicking team
+makes the next deliberate on-the-ball action — and long ones get none. That rule
+agrees with Wyscout on **94–95%** of labelled passes of comparable length,
+falling to 87–91% at long-ball distances, which is why it is not extended to
+them. The inference is never mixed into the recorded counts:
+`passes_outcome_inferred` isolates it, and subtracting gives the recorded-only
+figure. Across the dataset the two differ by 0.07pp; for a goalkeeper they do not.
+
+`0.3` is about 31 m from the goal line, where the retention curve breaks. Wyscout
+files every goal kick as `Goal kick` with no subtype and no tags, so there is no
+upstream distinction to defer to and the line is ours.
+
+**Goal kicks have no start position.** Wyscout writes a corner-flag sentinel —
+`(0,0)` or `(100,100)`, both variants, in the same match — so `stg_events` nulls
+it rather than passing on a coordinate that would place 17,299 goal kicks at the
+opponent's corner flag. The end point is genuine and kept. They therefore carry
+no weight in `mean_action_x` and cannot land in `touches_in_defensive_third`.
+
+### Interceptions
+
+Wyscout V2 has no interception event type either. A touch that wins the ball is
+filed as whatever it already was and tagged 1401; kloppy turns that tag into an
+`InterceptionEvent`, inserting one beside a pass or clearance and substituting
+one for a duel or touch. So an interception always has a **host**, and the leaf
+names it:
+
+| Leaf                        | n      | kloppy's treatment            |
+| --------------------------- | ------ | ----------------------------- |
+| `interception_as_pass`      | 67,967 | inserted beside the pass      |
+| `interception_as_touch`     | 66,016 | replaced _Others on the ball_ |
+| `interception_as_clearance` | 32,328 | inserted beside the clearance |
+| `interception_as_duel`      | 7,357  | replaced the duel             |
+
+`interceptions` sums all four — the number of times the player won the ball.
+`defensive_actions` excludes `interception_as_clearance`, because those
+clearances are already in the sum and one touch would otherwise count twice.
+Naming the host rather than filtering it means a new pass or defensive metric
+meets the distinction instead of inheriting the double-count.
+
+### Open questions
+
+- **Which actions count toward the success rate.** Wyscout tags clearances
+  accurate/not accurate, but kloppy hardcodes `result: None` for them, so the
+  outcome never reached the warehouse. The ingest now carries the raw tag ids,
+  which makes clearance outcomes available again — but whether a "successful
+  clearance" belongs in the same rate as a won tackle is a football judgement,
+  not a data one.
+- **Recoveries have no outcome at all** in the source: no accurate tag is ever
+  written for them. They cannot join a success rate on any definition.
+- **Minutes played are not modelled.** They are nested in `teamsData.formation`
+  as lineup, bench and substitutions, which no model unnests yet. Until then
+  every metric is a per-match count, not a per-90, and the spec's "no player
+  over 100 minutes" test cannot be written.
+
 ## Analysis
 
 `fis.warehouse` is the only sanctioned input for analysis code:

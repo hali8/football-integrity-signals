@@ -1,0 +1,75 @@
+version: 2
+
+models:
+  - name: fct_player_match_metrics
+    description: >
+      One row per player-match. A thin slice of four metrics to prove the spine;
+      definitions are in the README, and the SQL implements them rather than
+      deciding them.
+    data_tests:
+      - not_empty
+      - unique_combination:
+          arguments:
+            columns: [match_id, player_id]
+    columns:
+      - name: match_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+      - name: player_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_players')
+                field: player_id
+      - name: passes
+        description: >
+          Every pass credited to the player, goal kicks included — the pass was
+          played whether or not Wyscout scored it.
+      - name: passes_with_outcome
+        description: >
+          The pass_completion_pct denominator: passes Wyscout tagged, plus short
+          goal kicks whose outcome we infer. Below `passes` by the long goal kicks.
+      - name: passes_completed
+        description: Recorded completions plus inferred ones, over the same set.
+      - name: passes_unjudged
+        description: >
+          Long goal kicks. Wyscout never tags a goal kick for accuracy and a
+          contested long ball is not safely inferable, so they are counted but
+          not rated.
+      - name: passes_outcome_inferred
+        description: >
+          How much of passes_completed is derived rather than recorded — short
+          goal kicks only. Subtract it to get the recorded-only figure.
+      - name: pass_completion_pct
+        description: >
+          passes_completed / passes_with_outcome. Null where nothing was judged,
+          so "did not pass" stays distinct from "passed and never completed".
+      - name: crosses
+        description: >
+          Counted from the qualifier list, not pass_type — that column keeps
+          only the last qualifier and shows 26,444 crosses where there are
+          62,169.
+      - name: interceptions
+        description: >
+          Every interception, whichever event kloppy built it from. Deliberately
+          a different set from defensive_actions.
+      - name: defensive_actions
+        description: >
+          Tackles, interceptions and clearances, per the spec definition, with an
+          interception recorded as a clearance counted once rather than twice.
+      - name: defensive_action_success_pct
+        description: >
+          Share of defensive actions Wyscout scored that succeeded. Nothing here
+          is inferred.
+      - name: touches_in_defensive_third
+        description: Actions starting at x < 1/3, with x towards the attacked goal.
+      - name: mean_action_x
+        description: >
+          Mean starting x over the player's actions that have a position, 0 own
+          goal-line to 1 opponent's. Goal kicks carry a corner-flag sentinel
+          rather than a position and are excluded.
