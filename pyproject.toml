@@ -40,6 +40,7 @@ Homepage = "https://github.com/sahalyacoob/football-integrity-signals"
 Source = "https://github.com/sahalyacoob/football-integrity-signals"
 
 [project.scripts]
+fis-baseline = "fis.analysis.baseline:main"
 fis-data-dir = "fis.paths:main"
 fis-fetch-wyscout = "fis.data.wyscout:main"
 fis-gen-dbt-docs = "fis.data.dbt_docs:main"
