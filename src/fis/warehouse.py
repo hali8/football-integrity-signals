@@ -93,6 +93,29 @@ def mart(name: str, columns: list[str] | None = None) -> pd.DataFrame:
         return con.execute(f"select {selection} from {table}").df()
 
 
+def publish(name: str, frame: pd.DataFrame) -> int:
+    """Write an analysis result back into the marts schema. Returns the row count.
+
+    This is the one write analysis is allowed, and it is not a way around the
+    stage rule: the input still has to come from a mart. It exists because a
+    statistical result is a table, and a table belongs where the tables are --
+    readable through :func:`mart` like anything else.
+
+    The caveat is ownership, so it is stated rather than hidden in a schema
+    name: **dbt does not build this table**. ``dbt build`` will not refresh it
+    and ``dbt clean`` will not remove it, so it goes stale the moment the mart
+    under it is rebuilt. Re-run the analysis, not dbt.
+    """
+    with connect(read_only=False) as con:
+        con.register("_publishing", frame)
+        con.execute(f'create schema if not exists "{MARTS_SCHEMA}"')
+        con.execute(
+            f'create or replace table "{MARTS_SCHEMA}"."{name}" as select * from _publishing'
+        )
+        con.unregister("_publishing")
+    return len(frame)
+
+
 def query(sql: str) -> pd.DataFrame:
     """Escape hatch for ad-hoc SQL against the marts schema.
 
