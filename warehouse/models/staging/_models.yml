@@ -209,12 +209,13 @@ models:
       - name: start_x
         description: >
           Normalised 0-1, already transformed to ACTION_EXECUTING_TEAM
-          orientation, so x runs towards the goal being attacked.
-        data_tests: [not_null]
+          orientation, so x runs towards the goal being attacked. Null for goal
+          kicks and only for goal kicks — Wyscout writes a corner-flag sentinel
+          there rather than a position. assert_only_goal_kicks_lack_a_position
+          holds the "only".
 
       - name: start_y
-        description: Normalised 0-1.
-        data_tests: [not_null]
+        description: Normalised 0-1. Null for goal kicks, as start_x.
 
       - name: end_x
         description: Null where the event has no end location.

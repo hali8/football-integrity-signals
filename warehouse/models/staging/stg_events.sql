@@ -31,6 +31,11 @@ renamed as (
         -- it with provider so a second source cannot collide on it later.
         'wyscout' as provider,
         event_id as event_id,
+        -- kloppy names an inserted interception after the event it was built
+        -- from: interception-88178667. Decoded here so downstream can ask what
+        -- the host was; null for rows carrying a real Wyscout id.
+        case when regexp_matches(event_id, '^[a-z_]+-\d+$')
+             then regexp_replace(event_id, '^[a-z_]+-', '') end as parent_event_id,
         match_id as match_id,
         team_id as team_id,
         player_id as player_id,
@@ -48,8 +53,17 @@ renamed as (
         -- Where. Normalised to 0-1 by kloppy and already transformed to
         -- ACTION_EXECUTING_TEAM orientation by the ingest, so x always runs
         -- towards the goal being attacked.
-        coordinates_x as start_x,
-        coordinates_y as start_y,
+        --
+        -- Goal kicks are the exception: Wyscout writes a corner-flag sentinel
+        -- for the start, (0,0) or (100,100), in both variants and never a real
+        -- position. Nulled rather than passed on, because 0.0 and 1.0 are valid
+        -- coordinates that no range check can reject -- 17,299 of them would
+        -- otherwise read as taken from the opponent's corner. The end point is
+        -- genuine and is kept. See PROBLEMS.md.
+        case when set_piece_type is distinct from 'GOAL_KICK'
+             then coordinates_x end as start_x,
+        case when set_piece_type is distinct from 'GOAL_KICK'
+             then coordinates_y end as start_y,
         end_coordinates_x as end_x,
         end_coordinates_y as end_y,
 
