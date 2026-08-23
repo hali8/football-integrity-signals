@@ -248,6 +248,7 @@ warehouse/.user.yml
 TODO.md
 PROBLEMS.md
 KLOPPY-ISSUE.md
+DATASET-ISSUE.md
 
 # Ad-hoc analysis kept to hand, not shipped. Findings live in PROBLEMS.md.
 pass_twins.sql

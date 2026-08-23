@@ -523,19 +523,34 @@ meets the distinction instead of inheriting the double-count.
 ```python
 from fis import warehouse
 
-warehouse.mart_names()                                  # what is built
-warehouse.mart("mart_match_summary")                    # -> DataFrame
-warehouse.mart("mart_match_summary", columns=["xg"])    # validated selection
+warehouse.mart_names()
+# ['fct_player_match_metrics']
+
+warehouse.mart("fct_player_match_metrics")
+# 53,719 rows x 16 columns -> DataFrame
+
+warehouse.mart("fct_player_match_metrics", columns=["player_id", "pass_completion_pct"])
 ```
 
-Every failure names the remedy rather than surfacing a duckdb traceback:
+Every failure names the remedy rather than surfacing a duckdb traceback. Asking
+for a column that does not exist:
 
 ```
-Mart 'mart_match_summary' has no column(s): xg_conceded.
-  Available: match_id, events
+Mart 'fct_player_match_metrics' has no column(s): xg_conceded.
+  Available: match_id, player_id, team_id, actions, passes, passes_completed, ...
   Fix: a missing column is a missing dbt model, not a backwards
-       reach. Add it to warehouse/models/marts/mart_match_summary.sql and
+       reach. Add it to warehouse/models/marts/fct_player_match_metrics.sql and
        run `pixi run ingest && pixi run build`.
+```
+
+Asking for a mart that does not exist:
+
+```
+No mart 'mart_match_summary' in schema 'main_marts'.
+  Available: fct_player_match_metrics
+  Fix: a missing mart is a missing dbt model. Add
+       warehouse/models/marts/mart_match_summary.sql, then run `pixi run ingest && pixi run build`.
+  Do NOT read data/parquet/ from analysis -- see the stage rule in README.
 ```
 
 ## Development
