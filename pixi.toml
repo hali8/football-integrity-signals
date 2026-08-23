@@ -16,11 +16,7 @@ ingest = { cmd = "fis-ingest-wyscout", depends-on = ["fetch"] }
 # Discovery comes from [activation.env]; dbt's paths are relative to the working
 # directory, and pixi runs tasks from the manifest directory.
 dbt-debug = "dbt debug"
-# Two passes: audit models introspect the warehouse at compile time, so staging
-# must exist first. Not expressible with ref() -- no graph at parse time.
-build = { cmd = "dbt build --exclude path:models/audit && dbt build --select path:models/audit+", depends-on = [
-  "ingest",
-] }
+build = { cmd = "dbt build", depends-on = ["ingest"] }
 dbt = "dbt"
 # Includes the stage-rule import bans under src/fis/analysis/.
 lint = "ruff check src"

@@ -8,6 +8,28 @@
   approx_count_distinct: exact counts over 3.3M rows x 81 columns are not worth
   the wait for a number used to spot "constant" or "nearly unique".
 #}
+
+{#
+  Ordering. The macros below discover models from dbt's graph at run time, which
+  needs {% if execute %} -- and refs inside that guard are invisible at parse
+  time, when dbt collects dependencies. So the edges are declared here instead.
+
+  Only the ORDER is hand-listed; discovery stays generated, so a model missing
+  from this list still appears in the profile, it just is not guaranteed to be
+  built first. Add new staging models here.
+#}
+-- depends_on: {{ ref('stg_coaches') }}
+-- depends_on: {{ ref('stg_competitions') }}
+-- depends_on: {{ ref('stg_events') }}
+-- depends_on: {{ ref('stg_match_lineups') }}
+-- depends_on: {{ ref('stg_match_referees') }}
+-- depends_on: {{ ref('stg_match_substitutions') }}
+-- depends_on: {{ ref('stg_match_teams') }}
+-- depends_on: {{ ref('stg_matches') }}
+-- depends_on: {{ ref('stg_players') }}
+-- depends_on: {{ ref('stg_referees') }}
+-- depends_on: {{ ref('stg_teams') }}
+
 {{ config(materialized = 'table') }}
 
 {% set pairs = staging_columns() %}
