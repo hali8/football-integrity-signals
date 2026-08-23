@@ -14,7 +14,11 @@
 
   Only the ORDER is hand-listed; discovery stays generated, so a model missing
   from this list still appears in the profile, it just is not guaranteed to be
-  built first. Add new staging models here.
+  built first -- until the scheduler happens to put it after this one, and the
+  build fails on a relation that does not exist yet. Which is what happened: the
+  four models below the staging block declare relationships and were profiled
+  for weeks without being listed. Add EVERY model that declares one, at any
+  layer, not just staging.
 #}
 -- depends_on: {{ ref('stg_coaches') }}
 -- depends_on: {{ ref('stg_competitions') }}
@@ -27,6 +31,10 @@
 -- depends_on: {{ ref('stg_players') }}
 -- depends_on: {{ ref('stg_referees') }}
 -- depends_on: {{ ref('stg_teams') }}
+-- depends_on: {{ ref('int_match_results') }}
+-- depends_on: {{ ref('int_player_match_actions') }}
+-- depends_on: {{ ref('int_player_match_minutes') }}
+-- depends_on: {{ ref('fct_player_match_metrics') }}
 
 {{ config(materialized = 'table') }}
 
