@@ -14,6 +14,19 @@ with actions as (
 
 ),
 
+players as (
+
+    select player_id, position, position_code from {{ ref('stg_players') }}
+
+),
+
+minutes as (
+
+    select match_id, player_id, started, minutes_played
+    from {{ ref('int_player_match_minutes') }}
+
+),
+
 pivoted as (
 
     select
@@ -76,9 +89,25 @@ pivoted as (
 )
 
 select
-    match_id,
-    player_id,
-    team_id,
+    pivoted.match_id,
+    pivoted.player_id,
+    pivoted.team_id,
+
+    -- Who they are. position is the player's registered role, not where they
+    -- played on the day -- Wyscout records no per-match position.
+    players.position,
+    players.position_code,
+
+    -- How long they were on. From the lineups and substitutions, capped at the
+    -- match's own length; null for 50 player-matches that have events but no
+    -- lineup entry, which is an upstream gap and not something to estimate.
+    minutes.started,
+    minutes.minutes_played,
+    -- Eligibility is a column, not a filter: the mart keeps every row and the
+    -- analysis decides. Null where minutes are unknown, so "too few minutes"
+    -- and "we do not know" stay apart.
+    minutes.minutes_played >= {{ var('eligible_minutes', 30) }} as is_eligible,
+
     actions,
     passes,
     passes_completed,
@@ -96,3 +125,5 @@ select
     touches_in_defensive_third,
     round(mean_action_x, 4) as mean_action_x
 from pivoted
+left join players using (player_id)
+left join minutes using (match_id, player_id)

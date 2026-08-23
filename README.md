@@ -412,20 +412,23 @@ and nothing else complains.
 **Drafted, not decided.** The SQL implements these; it does not choose them.
 Anything below marked _open_ is a judgement that has not been made yet.
 
-| Metric                         | Definition                                                                                                                             |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `passes`                       | Every pass credited to the player, goal kicks included.                                                                                |
-| `passes_with_outcome`          | Passes Wyscout tagged for accuracy, plus short goal kicks whose outcome is inferred.                                                   |
-| `passes_completed`             | Recorded completions plus inferred ones, over that same set.                                                                           |
-| `passes_unjudged`              | `passes − passes_with_outcome`. Long goal kicks.                                                                                       |
-| `passes_outcome_inferred`      | How much of `passes_completed` is derived rather than recorded.                                                                        |
-| `pass_completion_pct`          | `passes_completed / passes_with_outcome`, null when nothing was judged.                                                                |
-| `crosses`                      | Events whose qualifier list contains `Pass:CROSS`.                                                                                     |
-| `interceptions`                | Every interception, whichever event kloppy built it from.                                                                              |
-| `defensive_actions`            | Tackles, interceptions and clearances. An interception recorded as a clearance is one action, not two.                                 |
-| `defensive_action_success_pct` | Share of defensive actions Wyscout scored that succeeded. Tackles, clearances and interceptions count alike. Nothing here is inferred. |
-| `touches_in_defensive_third`   | Actions starting at `x < 1/3`.                                                                                                         |
-| `mean_action_x`                | Mean starting `x` over the player's actions that have a position.                                                                      |
+| Metric                         | Definition                                                                                                                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `position`                     | The player's registered role. Wyscout records no per-match position.                                                                                                                         |
+| `minutes_played`               | From the lineups and substitutions, capped at the match's own length — not a nominal 90. Inferred from the player's own events for 50 player-matches whose substitution is missing upstream. |
+| `is_eligible`                  | `minutes_played >= 30`. A column, not a filter: the mart keeps every row and the analysis decides.                                                                                           |
+| `passes`                       | Every pass credited to the player, goal kicks included.                                                                                                                                      |
+| `passes_with_outcome`          | Passes Wyscout tagged for accuracy, plus short goal kicks whose outcome is inferred.                                                                                                         |
+| `passes_completed`             | Recorded completions plus inferred ones, over that same set.                                                                                                                                 |
+| `passes_unjudged`              | `passes − passes_with_outcome`. Long goal kicks.                                                                                                                                             |
+| `passes_outcome_inferred`      | How much of `passes_completed` is derived rather than recorded.                                                                                                                              |
+| `pass_completion_pct`          | `passes_completed / passes_with_outcome`, null when nothing was judged.                                                                                                                      |
+| `crosses`                      | Events whose qualifier list contains `Pass:CROSS`.                                                                                                                                           |
+| `interceptions`                | Every interception, whichever event kloppy built it from.                                                                                                                                    |
+| `defensive_actions`            | Tackles, interceptions and clearances. An interception recorded as a clearance is one action, not two.                                                                                       |
+| `defensive_action_success_pct` | Share of defensive actions Wyscout scored that succeeded. Tackles, clearances and interceptions count alike. Nothing here is inferred.                                                       |
+| `touches_in_defensive_third`   | Actions starting at `x < 1/3`.                                                                                                                                                               |
+| `mean_action_x`                | Mean starting `x` over the player's actions that have a position.                                                                                                                            |
 
 A **tackle** is a `DUEL` carrying Wyscout tag 1601 `sliding_tackle`. Wyscout has
 no separate tackle event, so tackles are a subset of duels and the other duels

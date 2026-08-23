@@ -26,6 +26,33 @@ models:
               arguments:
                 to: ref('stg_players')
                 field: player_id
+      - name: position
+        description: >
+          The player's registered role. Not where they played on the day —
+          Wyscout records no per-match position.
+        data_tests: [not_null]
+      - name: position_code
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [GK, DF, MD, FW]
+      - name: started
+        description: True if named in the starting eleven rather than the bench.
+      - name: minutes_played
+        description: >
+          From the lineups and substitutions, capped at the match's own length.
+          For 50 player-matches the substitution is missing from the source and
+          the window is inferred from the player's own events — see
+          int_player_match_minutes.minutes_are_inferred.
+        data_tests: [not_null]
+      - name: is_eligible
+        description: >
+          minutes_played >= 30, the sample floor for comparing players. A column
+          rather than a filter, so the mart keeps every row and the analysis
+          decides. Override with --vars eligible_minutes.
+        data_tests: [not_null]
+
       # Counts are never null. A player who did none of something did none of
       # it; null would claim we do not know. Only the rates below are nullable.
       - name: actions
