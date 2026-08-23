@@ -254,13 +254,21 @@ models:
               arguments:
                 to: ref('stg_competitions')
                 field: competition_id
-      - name: winning_team_id
-        description: Null for a draw. Wyscout writes 0, nulled in staging.
+      - name: published_winner_id
+        description: >
+          Wyscout's `winner`, nulled where it reads 0. Not the result — it
+          disagrees with Wyscout's own scores on 7 matches. Use
+          int_match_results.winning_team_id, which is derived from the scores.
         data_tests:
           - relationships:
               arguments:
                 to: ref('stg_teams')
                 field: team_id
+      - name: published_is_draw
+        description: >
+          True where `winner` reads 0. Keeps the marker that nulling the id
+          would otherwise lose. True on 474 matches; 467 are genuine draws.
+        data_tests: [not_null]
 
   - name: stg_match_referees
     data_tests: [not_empty]

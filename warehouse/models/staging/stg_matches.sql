@@ -18,8 +18,15 @@ renamed as (
         {{ decode_unicode_escapes('venue') }} as venue,
         status as status,
         duration as duration,
-        -- 0 where the match was drawn; not a team id.
-        nullif(winner, 0) as winning_team_id,
+        -- As published, and named so. Wyscout writes 0 for a drawn match, but
+        -- also on 7 matches with a decisive score, so `winner` is not the
+        -- result -- it is what the publisher recorded. int_match_results derives
+        -- the result from the scores and reports where the two disagree.
+        --
+        -- No team has id 0, so the foreign key must be null; published_is_draw
+        -- keeps the marker itself, which null alone would lose.
+        nullif(winner, 0) as published_winner_id,
+        winner = 0 as published_is_draw,
         groupName as group_name
     from source
 )

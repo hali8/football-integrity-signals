@@ -111,3 +111,36 @@ models:
         data_tests: [not_null]
       - name: started
         data_tests: [not_null]
+
+  - name: int_match_results
+    description: >
+      One row per match, with the result derived from the scores rather than
+      taken from Wyscout's `winner` field, which reads 0 (drawn) on 7 matches
+      that had a decisive score. Both are kept and compared.
+    data_tests:
+      - not_empty
+      - unique_combination:
+          arguments:
+            columns: [match_id]
+    columns:
+      - name: match_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+      - name: home_team_id
+        data_tests: [not_null]
+      - name: away_team_id
+        data_tests: [not_null]
+      - name: winning_team_id
+        description: Null only where the match was genuinely drawn.
+      - name: is_draw
+        description: Derived from the scores, not from the publisher's field.
+        data_tests: [not_null]
+      - name: agrees_with_publisher
+        description: >
+          False where Wyscout's `winner` disagrees with its own scores. Warns
+          rather than errors: the defect is upstream and cannot be fixed here.
+        data_tests: [not_null]
