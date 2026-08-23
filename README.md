@@ -94,8 +94,11 @@ pixi run fetch
 pixi run ingest
 ```
 
-Both commands are idempotent — re-running skips work that is already done. To
-ingest a handful of matches while iterating:
+Both are idempotent: re-running skips work already done **by the current
+pipeline**. Change the ingest code, the kloppy version or the pinned dataset
+commit and the next run re-ingests everything rather than trusting the files it
+finds — see [Knowing when the parquet is out of date](#knowing-when-the-parquet-is-out-of-date).
+To ingest a handful of matches while iterating:
 
 ```bash
 fis-ingest-wyscout --limit 10
@@ -409,24 +412,31 @@ and nothing else complains.
 **Drafted, not decided.** The SQL implements these; it does not choose them.
 Anything below marked _open_ is a judgement that has not been made yet.
 
-| Metric                         | Definition                                                                                             |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `passes`                       | Every pass credited to the player, goal kicks included.                                                |
-| `passes_with_outcome`          | Passes Wyscout tagged for accuracy, plus short goal kicks whose outcome is inferred.                   |
-| `passes_completed`             | Recorded completions plus inferred ones, over that same set.                                           |
-| `passes_unjudged`              | `passes − passes_with_outcome`. Long goal kicks.                                                       |
-| `passes_outcome_inferred`      | How much of `passes_completed` is derived rather than recorded.                                        |
-| `pass_completion_pct`          | `passes_completed / passes_with_outcome`, null when nothing was judged.                                |
-| `crosses`                      | Events whose qualifier list contains `Pass:CROSS`.                                                     |
-| `interceptions`                | Every interception, whichever event kloppy built it from.                                              |
-| `defensive_actions`            | Tackles, interceptions and clearances. An interception recorded as a clearance is one action, not two. |
-| `defensive_action_success_pct` | Share of defensive actions Wyscout scored that succeeded — see below. Nothing here is inferred.        |
-| `touches_in_defensive_third`   | Actions starting at `x < 1/3`.                                                                         |
-| `mean_action_x`                | Mean starting `x` over the player's actions that have a position.                                      |
+| Metric                         | Definition                                                                                                                             |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `passes`                       | Every pass credited to the player, goal kicks included.                                                                                |
+| `passes_with_outcome`          | Passes Wyscout tagged for accuracy, plus short goal kicks whose outcome is inferred.                                                   |
+| `passes_completed`             | Recorded completions plus inferred ones, over that same set.                                                                           |
+| `passes_unjudged`              | `passes − passes_with_outcome`. Long goal kicks.                                                                                       |
+| `passes_outcome_inferred`      | How much of `passes_completed` is derived rather than recorded.                                                                        |
+| `pass_completion_pct`          | `passes_completed / passes_with_outcome`, null when nothing was judged.                                                                |
+| `crosses`                      | Events whose qualifier list contains `Pass:CROSS`.                                                                                     |
+| `interceptions`                | Every interception, whichever event kloppy built it from.                                                                              |
+| `defensive_actions`            | Tackles, interceptions and clearances. An interception recorded as a clearance is one action, not two.                                 |
+| `defensive_action_success_pct` | Share of defensive actions Wyscout scored that succeeded. Tackles, clearances and interceptions count alike. Nothing here is inferred. |
+| `touches_in_defensive_third`   | Actions starting at `x < 1/3`.                                                                                                         |
+| `mean_action_x`                | Mean starting `x` over the player's actions that have a position.                                                                      |
 
 A **tackle** is a `DUEL` carrying Wyscout tag 1601 `sliding_tackle`. Wyscout has
 no separate tackle event, so tackles are a subset of duels and the other duels
 are counted separately as `duel`.
+
+**A clearance succeeds if Wyscout tagged it 1801.** kloppy hardcodes
+`result: None` for clearances, so that tag is the only surviving outcome — which
+is why the ingest carries the raw tag ids. A cleared ball and a won tackle count
+alike in `defensive_action_success_pct`: both ended the opponent's possession,
+and the rate would otherwise describe defenders who tackle rather than defenders
+who defend.
 
 **Crosses must be counted from `qualifiers`, never from `pass_type`.** kloppy's
 flat column keeps only the last qualifier it attached, so a cross tagged "high"
@@ -497,18 +507,14 @@ meets the distinction instead of inheriting the double-count.
 
 ### Open questions
 
-- **Which actions count toward the success rate.** Wyscout tags clearances
-  accurate/not accurate, but kloppy hardcodes `result: None` for them, so the
-  outcome never reached the warehouse. The ingest now carries the raw tag ids,
-  which makes clearance outcomes available again — but whether a "successful
-  clearance" belongs in the same rate as a won tackle is a football judgement,
-  not a data one.
 - **Recoveries have no outcome at all** in the source: no accurate tag is ever
   written for them. They cannot join a success rate on any definition.
-- **Minutes played are not modelled.** They are nested in `teamsData.formation`
-  as lineup, bench and substitutions, which no model unnests yet. Until then
-  every metric is a per-match count, not a per-90, and the spec's "no player
-  over 100 minutes" test cannot be written.
+- **Nothing is expressed per 90.** `int_player_match_minutes` models minutes
+  played, but no metric divides by them yet, so every figure in the mart is a
+  per-match count. Comparing a substitute with a starter needs the rate.
+- **The short goal-kick threshold is read off a curve.** `end_x < 0.3` is where
+  retention breaks, 95% below and 57% above. Nobody has checked it against a
+  football definition — whether the ball reached the kicking team's own half, say.
 
 ## Analysis
 
@@ -561,19 +567,30 @@ src/fis/
 ├── paths.py                  path resolution — single source of truth
 ├── warehouse.py              mart access — the only input for analysis
 ├── data/wyscout.py           dataset fetch    -> fis-fetch-wyscout
+├── data/figshare.py          reference tables -> data/json
+├── data/audit.py             post-download checks, scoped by dataset
+├── data/dbt_docs.py          publisher field docs -> dbt doc blocks
 ├── ingest/wyscout.py         JSON -> parquet  -> fis-ingest-wyscout
+├── ingest/kloppy_workarounds.py   repairs for four deserialisation defects
 └── analysis/                 reads marts only; ruff.toml enforces it
 warehouse/
 ├── dbt_project.yml           dbt project
 ├── profiles.yml              duckdb target
-└── models/{staging,intermediate,marts}
+├── macros/                   reusable SQL, e.g. the unicode decoder
+├── models/{staging,intermediate,marts,audit}
+└── tests/                    singular tests, plus tests/generic/
 utils/                        thin shell wrapper around fis-fetch-wyscout
 .github/workflows/ci.yml      lint + package/dbt-parse
 ```
 
 ## Status
 
-Early. Fetch, ingest, the dbt wiring and the stage-rule enforcement all work and
-are tested end to end. No signal models exist yet: `staging/` holds only the
-source definition, and `intermediate/` and `marts/` are empty — so
-`warehouse.mart_names()` returns nothing until you add one.
+One vertical slice, end to end. Fetch, ingest, the dbt wiring and the stage-rule
+enforcement work and are tested; 14 staging models, 2 intermediate and
+`fct_player_match_metrics` build from a single `dbt build`.
+
+The slice is deliberately thin — enough metrics to prove the spine, not the full
+set. What it has cost more than it looks: the ingest carries four workarounds for
+kloppy defects, one of which was silently deleting 4,400 events, and two of the
+metric definitions turn on Wyscout conventions that are documented nowhere. Those
+are written up where they bite, not collected in one place.
