@@ -239,27 +239,33 @@ triggers a full re-ingest; half an hour of compute is the cheaper mistake.
 
 ### Deserialisation workarounds
 
-38 of the 1941 matches will not load with a plain `kloppy.wyscout.load`. Three
-distinct defects are responsible, repaired in
+38 of the 1941 matches will not load with a plain `kloppy.wyscout.load`, and a
+further 1690 load while quietly missing events. Four distinct defects are
+responsible, repaired in
 [src/fis/ingest/kloppy_workarounds.py](src/fis/ingest/kloppy_workarounds.py):
 
-| Defect                | Files | Cause                                           |
-| --------------------- | ----- | ----------------------------------------------- |
-| `extra-time-period`   | 10    | kloppy: `deserializer_v2` evaluates `int("E1")` |
-| `shot-as-final-event` | 6     | kloppy: `_parse_shot` lookahead is unguarded    |
-| `null-roster-entry`   | 22    | upstream data: a `null` entry in `players`      |
+| Defect                   | Files | Cause                                           |
+| ------------------------ | ----- | ----------------------------------------------- |
+| `extra-time-period`      | 10    | kloppy: `deserializer_v2` evaluates `int("E1")` |
+| `shot-as-final-event`    | 6     | kloppy: `_parse_shot` lookahead is unguarded    |
+| `null-roster-entry`      | 22    | upstream data: a `null` entry in `players`      |
+| `lost-interception-host` | 1690  | kloppy: `events[:-1]` drops the wrong event     |
 
-**Repairs are applied lazily and specifically.** Every match is first loaded
+**The first three are applied lazily and specifically.** Every match is loaded
 normally; only a failure matching a known signature triggers a repair and a
 retry. An unrecognised error is re-raised untouched, so a new defect surfaces as
-a failure rather than being silently absorbed. The ~98% of matches that load
-cleanly are never touched — no JSON is re-parsed and no monkeypatch is installed.
+a failure rather than being silently absorbed.
 
-Two of the defects raise an identical
+Two of them raise an identical
 `TypeError: 'NoneType' object is not subscriptable`, so they are told apart by
 the kloppy function on the traceback, not by the message. That also means a
 kloppy restructure stops matching anything and the error surfaces, instead of a
 stale patch mis-firing.
+
+**The fourth raises nothing**, so it cannot be caught — it is found by comparing
+the loaded dataset against the file it came from. That check runs on every
+match, which is why the clean path now re-reads its JSON. See below for what it
+detects and why the repair is lossless.
 
 Nothing on disk is modified. JSON is repaired in memory and passed to kloppy as a
 `BytesIO`, so `data/download/` stays byte-identical to the pinned commit that
@@ -279,9 +285,29 @@ Nothing on disk is modified. JSON is repaired in memory and passed to kloppy as 
   save qualifier existed to lose. Verified: all six files are time-ordered and
   the shot really is the final event, so no save is hiding out of file order.
 - _Null roster._ The entry carries no player, so dropping it removes nothing.
+- _Lost interception host._ Only events kloppy deleted are put back, so nothing
+  else can move. The second parse differs from the first solely in that the
+  offending duels are no longer converted: kloppy's lookahead reads a following
+  event's type, subtype and team but never its tags, at all six call sites, so
+  removing tag 1401 from a duel cannot change how any other event is parsed.
+  Verified across all 1941 matches — afterwards the only events still absent are
+  offsides, which kloppy merges into the following pass or shot by design, and
+  the paired duels it means to remove.
 
-**These workarounds are meant to die.** Because repairs run only after a
-failure, an upstream fix would make them silently unreachable.
+**Why the fourth defect matters more than the other three.** Wyscout V2 has no
+interception event type; a touch that wins the ball is tagged 1401 on whatever
+it already was. kloppy turns that tag into an `InterceptionEvent`, substituting
+it for a tagged duel and deleting the duel's partner row — with `events[:-1]`,
+which drops the last event appended without checking that it is a duel. When the
+tagged duel is the first of its pair the partner comes _after_ it, so the event
+deleted is whatever preceded it: **4400 events across 1690 matches, including 35
+shots**. Only 310 leave a dangling `interception-<id>` behind; the other 4090
+disappear with nothing marking their absence. A crash costs you a match you know
+about. This costs you events you do not.
+
+**These workarounds are meant to die.** An upstream fix would make them
+unreachable — the first three because nothing raises, the fourth because the
+comparison finds nothing to repair.
 `tests/test_kloppy_workarounds.py` asserts each defect _still reproduces_ — when
 kloppy fixes one, that test fails and tells you to delete the repair.
 

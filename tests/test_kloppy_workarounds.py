@@ -17,24 +17,40 @@ from kloppy import wyscout
 
 from fis.data.wyscout import match_files
 from fis.ingest.kloppy_workarounds import (
+    DUEL_EVENT_ID,
     EXTRA_TIME_PERIOD,
+    INTERCEPTION_TAG,
+    LOST_INTERCEPTION_HOST,
     NULL_ROSTER_ENTRY,
     PERIOD_IDS,
     SHOT_AS_FINAL_EVENT,
     TESTED_KLOPPY_VERSION,
+    deleted_hosts,
     load_match,
 )
 
-# One representative match per defect, and one that needs nothing.
+# One representative match per raising defect, and one that needs nothing.
 KNOWN = {
     EXTRA_TIME_PERIOD: "1694426",
     SHOT_AS_FINAL_EVENT: "1694433",
     NULL_ROSTER_ENTRY: "2499738",
 }
-CLEAN_MATCH = "1694390"
+#: One of the 243 matches needing nothing. The silent defect hits 1690 of 1941,
+#: so most matches -- including the obvious first one -- are not candidates.
+CLEAN_MATCH = "1694400"
+
+#: The silent defect, which cannot be in KNOWN because it raises nothing: a
+#: match, and the pass kloppy drops from it.
+LOST_HOST_MATCH = "1694392"
+LOST_HOST_EVENT = "88520516"
 
 #: Counts observed across the full dataset when the workarounds were written.
-EXPECTED_COUNTS = {EXTRA_TIME_PERIOD: 10, SHOT_AS_FINAL_EVENT: 6, NULL_ROSTER_ENTRY: 22}
+EXPECTED_COUNTS = {
+    EXTRA_TIME_PERIOD: 10,
+    SHOT_AS_FINAL_EVENT: 6,
+    NULL_ROSTER_ENTRY: 22,
+    LOST_INTERCEPTION_HOST: 1690,
+}
 
 
 @pytest.fixture(scope="session")
@@ -64,6 +80,57 @@ def test_period_ids_match_kloppy():
     assert parse("2H") == 2
     for code, expected in PERIOD_IDS.items():
         assert parse(code) == expected, f"kloppy now maps {code} to {parse(code)}, not {expected}"
+
+
+def test_wyscout_constants_match_kloppy():
+    """Our literals must agree with kloppy's, or the silent repair misfires."""
+    module = pytest.importorskip(
+        "kloppy.infra.serializers.event.wyscout.wyscout_tags",
+        reason="kloppy moved wyscout_tags; re-verify INTERCEPTION_TAG by hand",
+    )
+    events = pytest.importorskip(
+        "kloppy.infra.serializers.event.wyscout.wyscout_events",
+        reason="kloppy moved wyscout_events; re-verify DUEL_EVENT_ID by hand",
+    )
+    assert module.INTERCEPTION == INTERCEPTION_TAG
+    assert events.DUEL.EVENT == DUEL_EVENT_ID
+
+
+def test_deleted_host_still_reproduces(files):
+    """A plain kloppy load must still lose the event -- otherwise the repair is obsolete.
+
+    The pass is tagged as an interception and is followed by a duel that is too.
+    Converting the duel runs ``events[:-1]``, which drops the pass instead of the
+    duel's own pair.
+    """
+    path = files[LOST_HOST_MATCH]
+    events = json.loads(path.read_text())["events"]
+    index = next(i for i, e in enumerate(events) if str(e["id"]) == LOST_HOST_EVENT)
+    following = events[index + 1]
+    assert following["eventId"] == DUEL_EVENT_ID
+    assert INTERCEPTION_TAG in [t["id"] for t in following["tags"]]
+
+    dataset = wyscout.load(event_data=str(path), data_version="V2")
+    assert LOST_HOST_EVENT not in {str(e.event_id) for e in dataset.records}
+
+
+def test_deleted_host_is_restored_in_place(files):
+    """The event comes back, keeps its own result, and lands in timestamp order."""
+    path = files[LOST_HOST_MATCH]
+    dataset, applied = load_match(path)
+    assert LOST_INTERCEPTION_HOST in applied
+    assert not deleted_hosts(dataset, json.loads(path.read_text()))
+
+    ids = [str(e.event_id) for e in dataset.records]
+    restored = dataset.records[ids.index(LOST_HOST_EVENT)]
+    assert str(restored.event_type) == "EventType.PASS"
+    # Tag 1802 is "not accurate", so the pass must not come back complete.
+    assert str(restored.result) == "INCOMPLETE"
+    assert all(
+        a.timestamp <= b.timestamp
+        for a, b in zip(dataset.records, dataset.records[1:])
+        if a.period.id == b.period.id
+    )
 
 
 @pytest.mark.parametrize("defect", sorted(KNOWN))
