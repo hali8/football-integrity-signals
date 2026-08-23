@@ -8,14 +8,56 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
-from fis.data.wyscout import fetch, match_files
+import kloppy
+
+from fis.data.wyscout import DATASET_COMMIT, fetch, match_files
+from fis.ingest import kloppy_workarounds
 from fis.ingest.kloppy_workarounds import load_match
 from fis.paths import ensure, parquet_dir
+
+#: Records what produced the parquet, so a changed pipeline re-ingests itself
+#: rather than waiting to be told. Sits beside the output it describes.
+INGEST_STAMP = ".fis-ingest.json"
+
+
+def provenance() -> dict[str, str]:
+    """The three things that decide what a parquet file contains.
+
+    The input data, the parser, and our own code -- the last hashed from source,
+    because a fix to the workarounds changes the output as surely as a new
+    dataset commit does. Editing a comment re-ingests too; a spare half hour is
+    the cheaper mistake.
+    """
+    sources = b"".join(
+        Path(module.__file__).read_bytes() for module in (sys.modules[__name__], kloppy_workarounds)
+    )
+    return {
+        "dataset_commit": DATASET_COMMIT,
+        "kloppy": kloppy.__version__,
+        "code": hashlib.sha256(sources).hexdigest()[:16],
+    }
+
+
+def stale(out_dir: Path, current: dict[str, str]) -> list[str]:
+    """What differs between the parquet on disk and what we would write now."""
+    stamp = out_dir / INGEST_STAMP
+    if not stamp.exists():
+        # No stamp and no output is a first run, not a stale one.
+        if not any(out_dir.glob("events_*.parquet")):
+            return []
+        return ["produced before provenance was recorded"]
+    previous = json.loads(stamp.read_text())
+    return [
+        f"{key}: {previous.get(key)} -> {value}"
+        for key, value in current.items()
+        if previous.get(key) != value
+    ]
 
 
 def _qualifiers(event) -> list[str]:
@@ -82,7 +124,11 @@ def main(argv: list[str] | None = None) -> int:
         help="download the dataset first if it is missing",
     )
     parser.add_argument("--limit", type=int, default=None, help="ingest at most N matches")
-    parser.add_argument("--force", action="store_true", help="re-ingest matches already done")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="re-ingest even when the existing parquet matches this pipeline",
+    )
     args = parser.parse_args(argv)
 
     if args.fetch:
@@ -100,12 +146,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit is not None:
         json_files = json_files[: args.limit]
 
+    current = provenance()
+    reasons = stale(out_dir, current)
+    if reasons:
+        print("existing parquet does not match this pipeline; re-ingesting all matches:")
+        for reason in reasons:
+            print(f"  {reason}")
+
     done, skipped, failed = 0, 0, []
     repairs: collections.Counter[str] = collections.Counter()
     for path in json_files:
         # koenvo names files by Wyscout match id.
         match_id = path.stem
-        if not args.force and (out_dir / f"events_{match_id}.parquet").exists():
+        redo = args.force or bool(reasons)
+        if not redo and (out_dir / f"events_{match_id}.parquet").exists():
             skipped += 1
             continue
         try:
@@ -116,6 +170,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"...{done} ingested")
         except Exception as exc:  # deliberate: one bad match must not kill match 300 of 1,941
             failed.append((match_id, repr(exc)))
+
+    # Stamped only when the whole dataset is present and sound. A partial run
+    # leaves no claim behind, so the next one starts over rather than mixing
+    # output from two pipelines.
+    if not failed and args.limit is None:
+        (out_dir / INGEST_STAMP).write_text(json.dumps(current, indent=2) + "\n")
 
     print(f"ingested {done}, skipped {skipped}, failed {len(failed)}")
     if repairs:

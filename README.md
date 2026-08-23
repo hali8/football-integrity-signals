@@ -219,6 +219,24 @@ downstream keys on.
 
 One bad match never aborts the run; failures are collected and reported at the end.
 
+### Knowing when the parquet is out of date
+
+Matches whose parquet already exists are skipped, which is what makes an
+interrupted run resumable. On its own that is also how a pipeline fix fails to
+reach the data: the files are there, so nothing is re-ingested and every number
+downstream keeps coming from the old parse.
+
+So `data/parquet/.fis-ingest.json` records the three things that decide what the
+output contains — the pinned dataset commit, the kloppy version, and a hash of
+`ingest/wyscout.py` and `ingest/kloppy_workarounds.py`. When any differs from
+what is on disk, the run says which one and re-ingests everything.
+
+The stamp is written only after a complete run with no failures, so an
+interrupted one leaves no claim behind and the next starts over rather than
+mixing output from two pipelines. Editing a comment in either module also
+triggers a full re-ingest; half an hour of compute is the cheaper mistake.
+`--force` re-ingests regardless.
+
 ### Deserialisation workarounds
 
 38 of the 1941 matches will not load with a plain `kloppy.wyscout.load`. Three
