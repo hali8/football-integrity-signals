@@ -65,7 +65,11 @@ renamed as (
 
         -- Every qualifier, not just the one that survived flattening. Count a
         -- cross with list_contains(qualifiers, 'Pass:CROSS'), never pass_type.
-        qualifiers as qualifiers
+        qualifiers as qualifiers,
+
+        -- Raw Wyscout tag ids. kloppy exposes only the counter-attack tag and
+        -- discards the rest, including 1801/1802 accurate on clearances.
+        wyscout_tags as wyscout_tags
 
     from source
 

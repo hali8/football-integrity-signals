@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -33,12 +35,31 @@ def _qualifiers(event) -> list[str]:
     return out
 
 
+def _raw_tags(json_path: Path) -> dict[str, list[int]]:
+    """Wyscout tag ids per raw event id.
+
+    kloppy exposes only the counter-attack tag; everything else -- including
+    1801/1802 accurate/not accurate, which it discards outright for clearances --
+    is dropped. Carrying the ids means any tag-derived fact stays recoverable in
+    SQL, and tags2name.csv labels them.
+    """
+    events = json.loads(json_path.read_text())["events"]
+    return {str(e["id"]): [t["id"] for t in e["tags"]] for e in events}
+
+
 def ingest_match(match_id: str, json_path: Path, out_dir: Path) -> tuple[Path, list[str]]:
     """Write one match to parquet. Returns the path and any repairs that were needed."""
     ds, applied = load_match(json_path)
     # Do this, or every spatial metric is noise.
     ds = ds.transform(to_orientation="ACTION_EXECUTING_TEAM")
-    df = ds.to_df("*", qualifiers=_qualifiers)
+    # kloppy synthesises ids like "interception-88519941" for events it derives;
+    # the numeric part is the raw event they came from.
+    tags = _raw_tags(json_path)
+    df = ds.to_df(
+        "*",
+        qualifiers=_qualifiers,
+        wyscout_tags=lambda e: tags.get(re.sub(r"^[a-z_]+-", "", str(e.event_id)), []),
+    )
     # kloppy's frame is ONE match -- it has no match_id column, and everything
     # downstream keys on it.
     df["match_id"] = match_id

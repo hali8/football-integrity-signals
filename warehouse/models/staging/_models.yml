@@ -199,6 +199,13 @@ models:
           a match where pass_type shows 12, and 'Duel:LOOSE_BALL' appears here
           but never in duel_type at all.
 
+      - name: wyscout_tags
+        description: >
+          Raw Wyscout tag ids, joinable to lookup.tags2name. kloppy surfaces
+          only the counter-attack tag, and hardcodes result = None for
+          clearances, so tag 1801 "accurate" is the only way to know whether a
+          clearance succeeded.
+
       - name: start_x
         description: >
           Normalised 0-1, already transformed to ACTION_EXECUTING_TEAM
@@ -370,3 +377,74 @@ models:
     columns:
       - name: player_id
         data_tests: [unique, not_null]
+
+  - name: stg_match_lineups
+    description: >
+      One row per player named in a match, starters and bench, unnested from
+      teamsData.formation. redCards holds the minute of a sending-off, not a
+      count. Player id 0 is Wyscout's "unknown player" and is nulled.
+    data_tests:
+      - not_empty
+      - unique_combination:
+          arguments:
+            columns: [match_id, player_id]
+    columns:
+      - name: match_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+      - name: team_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_teams')
+                field: team_id
+      - name: player_id
+        description: 23 named players have no stg_players record; upstream gap.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_players')
+                field: player_id
+              config:
+                severity: warn
+      - name: started
+        description: True for the starting eleven, false for the bench.
+        data_tests: [not_null]
+
+  - name: stg_match_substitutions
+    description: >
+      One row per substitution. Six team-matches carry the string 'null'
+      instead of a list and are filtered out. Player id 0 is nulled — three
+      matches record it substituted on repeatedly, which would fan out a join.
+    data_tests: [not_empty]
+    columns:
+      - name: match_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_matches')
+                field: match_id
+      - name: player_in
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_players')
+                field: player_id
+              config:
+                severity: warn
+      - name: player_out
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_players')
+                field: player_id
+              config:
+                severity: warn
+      - name: minute
+        data_tests: [not_null]
