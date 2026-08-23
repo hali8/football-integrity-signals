@@ -111,6 +111,13 @@ models:
         data_tests: [not_null]
       - name: started
         data_tests: [not_null]
+      - name: minutes_are_inferred
+        description: >
+          True for 50 players named on the bench with no substitution recorded
+          but with events, whose window comes from their own first and last
+          event. A lower bound, and the player they replaced is still credited
+          to full time — see assert_team_minutes_within_eleven.
+        data_tests: [not_null]
 
   - name: int_match_results
     description: >
