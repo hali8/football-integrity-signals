@@ -27,6 +27,18 @@ minutes as (
 
 ),
 
+matches as (
+
+    -- The scheduled window, not the clock: regular matches run to 107 minutes
+    -- and the excess is stoppage. Here so analysis need not know the rule.
+    select
+        match_id,
+        case when duration in ('ExtraTime', 'Penalties') then 120 else 90 end
+            as regulation_minutes
+    from {{ ref('stg_matches') }}
+
+),
+
 pivoted as (
 
     select
@@ -103,6 +115,7 @@ select
     -- lineup entry, which is an upstream gap and not something to estimate.
     minutes.started,
     minutes.minutes_played,
+    matches.regulation_minutes,
     -- Eligibility is a column, not a filter: the mart keeps every row and the
     -- analysis decides. Null where minutes are unknown, so "too few minutes"
     -- and "we do not know" stay apart.
@@ -127,3 +140,4 @@ select
 from pivoted
 left join players using (player_id)
 left join minutes using (match_id, player_id)
+left join matches using (match_id)

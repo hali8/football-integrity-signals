@@ -81,9 +81,16 @@ def load() -> pd.DataFrame:
 
 
 def prepare(frame: pd.DataFrame) -> pd.DataFrame:
-    """Eligible rows only, with volume metrics expressed per 90."""
+    """Eligible rows only, with volume metrics expressed per 90.
+
+    Exposure is capped at regulation length. Uncapped, two matches with the same
+    count differ only by stoppage time, and MAD settles on that difference --
+    reporting a spread orders of magnitude too small. Capped, they are identical
+    and the zero-MAD path handles them.
+    """
     frame = frame[frame["is_eligible"].fillna(False)].copy()
-    per_90 = 90.0 / frame["minutes_played"]
+    exposure = np.minimum(frame["minutes_played"], frame["regulation_minutes"])
+    per_90 = 90.0 / exposure
     for metric in VOLUME_METRICS:
         frame[f"{metric}_per_90"] = frame[metric] * per_90
     return frame

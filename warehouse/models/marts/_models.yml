@@ -46,6 +46,16 @@ models:
           the window is inferred from the player's own events — see
           int_player_match_minutes.minutes_are_inferred.
         data_tests: [not_null]
+      - name: regulation_minutes
+        description: >
+          90, or 120 after extra time. The scheduled window, not the clock.
+          Rates per 90 divide by min(minutes_played, this), so stoppage time
+          cannot masquerade as variation.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [90, 120]
       - name: is_eligible
         description: >
           minutes_played >= 30, the sample floor for comparing players. A column
