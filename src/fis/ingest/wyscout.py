@@ -110,8 +110,7 @@ def ingest_match(match_id: str, json_path: Path, out_dir: Path) -> tuple[Path, l
     return target, applied
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="fis-ingest-wyscout", description=__doc__.splitlines()[0])
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--out",
         type=Path,
@@ -129,8 +128,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="re-ingest even when the existing parquet matches this pipeline",
     )
-    args = parser.parse_args(argv)
 
+
+def is_ingested(out_dir: Path | None = None) -> bool:
+    out_dir = Path(out_dir) if out_dir is not None else parquet_dir()
+    return out_dir.exists() and any(out_dir.glob("events_*.parquet"))
+
+
+def run(args: argparse.Namespace) -> int:
     if args.fetch:
         fetch(quiet=True)
 
@@ -186,6 +191,12 @@ def main(argv: list[str] | None = None) -> int:
     for match_id, err in failed[:20]:
         print(f"  FAILED {match_id}: {err}")
     return 1 if failed and done == 0 else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="fis-ingest-wyscout", description=__doc__.splitlines()[0])
+    add_arguments(parser)
+    return run(parser.parse_args(argv))
 
 
 if __name__ == "__main__":

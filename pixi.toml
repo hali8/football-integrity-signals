@@ -10,9 +10,9 @@ DBT_PROFILES_DIR = "warehouse"
 DBT_PROJECT_DIR = "warehouse"
 
 [tasks]
-fetch = "fis-fetch-wyscout && fis-gen-dbt-docs"
+fetch = "fis-fetch && fis-gen-dbt-docs"
 # Chained so `pixi run build` works on a fresh clone. All three are idempotent.
-ingest = { cmd = "fis-ingest-wyscout", depends-on = ["fetch"] }
+ingest = { cmd = "fis-ingest", depends-on = ["fetch"] }
 # Discovery comes from [activation.env]; dbt's paths are relative to the working
 # directory, and pixi runs tasks from the manifest directory.
 dbt-debug = "dbt debug"

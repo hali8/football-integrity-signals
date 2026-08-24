@@ -42,15 +42,19 @@ jobs:
       - name: Import every module
         run: |
           python -c "
-          import fis, fis.paths, fis.warehouse
+          import fis, fis.paths, fis.warehouse, fis.sources
           import fis.data.wyscout, fis.ingest.wyscout, fis.analysis
+          import fis.data.fetch, fis.ingest.run
           print('data_dir:', fis.paths.data_dir())
           "
 
       - name: Console scripts are wired
         run: |
-          fis-fetch-wyscout --help
-          fis-ingest-wyscout --help
+          fis-fetch --help
+          fis-fetch wyscout --help
+          fis-ingest --help
+          fis-ingest wyscout --help
+          fis-sources --help
 
       - name: dbt project parses
         run: dbt parse --project-dir warehouse --profiles-dir warehouse

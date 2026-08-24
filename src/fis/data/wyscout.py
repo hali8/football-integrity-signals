@@ -145,8 +145,7 @@ def match_files(root: Path | None = None):
     return sorted((root / WANTED_SUBDIR / "files").glob("*.json"))
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="fis-fetch-wyscout", description=__doc__.splitlines()[0])
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dest",
         type=Path,
@@ -169,8 +168,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--audit-verbose", action="store_true", help="list checks that passed, not just findings"
     )
-    args = parser.parse_args(argv)
 
+
+def is_fetched(dest: Path | None = None) -> bool:
+    return _read_stamp(Path(dest) if dest is not None else wyscout_dir()) is not None
+
+
+def run(args: argparse.Namespace) -> int:
     try:
         fetch(args.dest, commit=args.commit, force=args.force, quiet=args.quiet)
         if not args.no_reference:
@@ -191,6 +195,12 @@ def main(argv: list[str] | None = None) -> int:
             print()
             print(format_report(findings, verbose=args.audit_verbose))
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="fis-fetch-wyscout", description=__doc__.splitlines()[0])
+    add_arguments(parser)
+    return run(parser.parse_args(argv))
 
 
 if __name__ == "__main__":
