@@ -161,6 +161,7 @@ select
 
     count(*) filter (where list_contains(qualifiers, 'Pass:CROSS')) as crosses,
     count(*) filter (where start_x < 1.0 / 3.0) as in_defensive_third,
+    sum(start_x) filter (where start_x < 1.0 / 3.0) as sum_start_x_in_defensive_third,
     -- Wyscout mirrors some events into the opposing team's frame, within a
     -- single match, for some players only. Only visible where we know where a
     -- player belongs, so it is counted for goalkeepers and left unmeasured for

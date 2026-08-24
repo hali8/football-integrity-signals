@@ -100,11 +100,21 @@ pivoted as (
         coalesce(sum(attempts) filter (where action_group = 'interception'), 0) as interceptions,
 
         sum(in_defensive_third) as touches_in_defensive_third,
+        coalesce(sum(in_defensive_third) filter (
+            where action_type in (
+                'tackle', 'clearance',
+                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
+            )
+        ), 0) as defensive_actions_in_defensive_third,
         sum(attempts_beyond_halfway) as attempts_beyond_halfway,
         -- Weighted by actions that have a position, so goal kicks -- whose
         -- start coordinate Wyscout does not record -- neither move nor dilute it.
         sum(attempts_with_position * mean_start_x)
-            / nullif(sum(attempts_with_position), 0) as mean_action_x
+            / nullif(sum(attempts_with_position), 0) as mean_action_x,
+        -- mean_action_x's weight and its defensive-third component, exposed
+        -- so it can be recomputed exactly after actions move.
+        sum(attempts_with_position) as attempts_with_position,
+        coalesce(sum(sum_start_x_in_defensive_third), 0) as sum_start_x_in_defensive_third
 
     from actions
     group by match_id, player_id, team_id
@@ -158,8 +168,11 @@ select
         defensive_actions_successful * 100.0 / nullif(defensive_actions_with_outcome, 0), 2
     ) as defensive_action_success_pct,
     touches_in_defensive_third,
+    defensive_actions_in_defensive_third,
     attempts_beyond_halfway,
     round(mean_action_x, 4) as mean_action_x,
+    attempts_with_position,
+    sum_start_x_in_defensive_third,
     -- A keeper four or more of whose actions read beyond halfway is not playing
     -- upfield, he is being recorded in the opposing frame. One or two may be
     -- real, so the bar is set where the evidence is unambiguous. Only

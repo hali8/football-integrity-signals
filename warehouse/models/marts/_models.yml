@@ -127,6 +127,11 @@ models:
       - name: touches_in_defensive_third
         description: Actions starting at x < 1/3, with x towards the attacked goal.
         data_tests: [not_null]
+      - name: defensive_actions_in_defensive_third
+        description: >
+          Of defensive_actions, how many also count towards
+          touches_in_defensive_third.
+        data_tests: [not_null]
       - name: attempts_beyond_halfway
         description: >
           Actions starting past the halfway line. Only meaningful for
@@ -144,3 +149,11 @@ models:
           Mean starting x over the player's actions that have a position, 0 own
           goal-line to 1 opponent's. Goal kicks carry a corner-flag sentinel
           rather than a position and are excluded.
+      - name: attempts_with_position
+        description: mean_action_x's denominator, exposed so it can be recomputed exactly.
+        data_tests: [not_null]
+      - name: sum_start_x_in_defensive_third
+        description: >
+          Sum of start x over touches_in_defensive_third, coalesced to 0 like
+          the other counts.
+        data_tests: [not_null]
