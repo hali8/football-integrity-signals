@@ -54,16 +54,16 @@ renamed as (
         -- ACTION_EXECUTING_TEAM orientation by the ingest, so x always runs
         -- towards the goal being attacked.
         --
-        -- Goal kicks are the exception: Wyscout writes a corner-flag sentinel
-        -- for the start, (0,0) or (100,100), in both variants and never a real
-        -- position. Nulled rather than passed on, because 0.0 and 1.0 are valid
-        -- coordinates that no range check can reject -- 17,299 of them would
-        -- otherwise read as taken from the opponent's corner. The end point is
-        -- genuine and is kept. See PROBLEMS.md.
-        case when set_piece_type is distinct from 'GOAL_KICK'
-             then coordinates_x end as start_x,
-        case when set_piece_type is distinct from 'GOAL_KICK'
-             then coordinates_y end as start_y,
+        -- Three kinds of event carry a corner-flag sentinel instead of a
+        -- position: (0,0) or (100,100), both variants, never a real location.
+        -- Goal kicks (31,797), every GOALKEEPER event (17,619) and every
+        -- GENERIC event (6,165) -- the last two 100% of their kind. Nulled
+        -- rather than passed on, because 0.0 and 1.0 are valid coordinates no
+        -- range check can reject. Corner kicks also sit on a corner and are
+        -- left alone: that one is real. End points are genuine and are kept.
+        -- See PROBLEMS.md.
+        case when {{ has_recorded_position() }} then coordinates_x end as start_x,
+        case when {{ has_recorded_position() }} then coordinates_y end as start_y,
         end_coordinates_x as end_x,
         end_coordinates_y as end_y,
 
@@ -83,7 +83,18 @@ renamed as (
 
         -- Raw Wyscout tag ids. kloppy exposes only the counter-attack tag and
         -- discards the rest, including 1801/1802 accurate on clearances.
-        wyscout_tags as wyscout_tags
+        wyscout_tags as wyscout_tags,
+
+        -- Tag 101 is written twice per goal -- on the scorer's shot and on the
+        -- conceding keeper's event -- so counting the tag makes every match a
+        -- draw. Resolved here rather than left as a trap. Includes the 3 goals
+        -- scored from a PASS, which event_type = 'SHOT' would miss.
+        list_contains(wyscout_tags, 101)
+            and event_type != 'GOALKEEPER' as is_goal,
+        -- Own goals carry 102 on the conceding player's own event -- a
+        -- clearance, interception or pass -- never a shot. So the goal counts
+        -- for the OTHER team, and team_id here is who conceded it.
+        list_contains(wyscout_tags, 102) as is_own_goal
 
     from source
 

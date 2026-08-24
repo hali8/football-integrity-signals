@@ -22,7 +22,8 @@ players as (
 
 minutes as (
 
-    select match_id, player_id, started, minutes_played
+    select match_id, player_id, started, minutes_played,
+           minutes_are_inferred, match_has_missing_substitution
     from {{ ref('int_player_match_minutes') }}
 
 ),
@@ -72,24 +73,34 @@ pivoted as (
                 'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
             )
         ), 0) as defensive_actions,
-        coalesce(sum(attempts_with_recorded_outcome) filter (
+        -- Recorded plus inferred, as with passes. Wyscout scores no outcome for
+        -- 38% of interceptions, so recorded-only left 3,872 player-matches with
+        -- no rate at all; possession-continuity fills those in.
+        coalesce(sum(attempts_with_recorded_outcome + attempts_with_inferred_outcome) filter (
             where action_type in (
                 'tackle', 'clearance',
                 'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
             )
         ), 0) as defensive_actions_with_outcome,
-        coalesce(sum(successes_recorded) filter (
+        coalesce(sum(successes_recorded + successes_inferred) filter (
             where action_type in (
                 'tackle', 'clearance',
                 'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
             )
         ), 0) as defensive_actions_successful,
+        coalesce(sum(attempts_with_inferred_outcome) filter (
+            where action_type in (
+                'tackle', 'clearance',
+                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
+            )
+        ), 0) as defensive_actions_outcome_inferred,
 
         -- All interceptions, however kloppy recorded them. Not the same set as
         -- defensive_actions, deliberately.
         coalesce(sum(attempts) filter (where action_group = 'interception'), 0) as interceptions,
 
         sum(in_defensive_third) as touches_in_defensive_third,
+        sum(attempts_beyond_halfway) as attempts_beyond_halfway,
         -- Weighted by actions that have a position, so goal kicks -- whose
         -- start coordinate Wyscout does not record -- neither move nor dilute it.
         sum(attempts_with_position * mean_start_x)
@@ -115,10 +126,16 @@ select
     -- lineup entry, which is an upstream gap and not something to estimate.
     minutes.started,
     minutes.minutes_played,
+    minutes.minutes_are_inferred,
+    -- True for everyone in the match, not just the inferred player.
+    coalesce(minutes.match_has_missing_substitution, false)
+        as match_has_missing_substitution,
     matches.regulation_minutes,
     -- Eligibility is a column, not a filter: the mart keeps every row and the
     -- analysis decides. Null where minutes are unknown, so "too few minutes"
-    -- and "we do not know" stay apart.
+    -- and "we do not know" stay apart. Says nothing about whether the minutes
+    -- are trustworthy: that is match_has_missing_substitution, and it matters
+    -- only to analysis that divides by time.
     minutes.minutes_played >= {{ var('eligible_minutes', 30) }} as is_eligible,
 
     actions,
@@ -132,11 +149,25 @@ select
     crosses,
     interceptions,
     defensive_actions,
+    -- The rate's denominator, exposed so a consumer can weight by how much was
+    -- actually scored rather than treating every percentage alike.
+    defensive_actions_with_outcome,
+    defensive_actions_successful,
+    defensive_actions_outcome_inferred,
     round(
         defensive_actions_successful * 100.0 / nullif(defensive_actions_with_outcome, 0), 2
     ) as defensive_action_success_pct,
     touches_in_defensive_third,
-    round(mean_action_x, 4) as mean_action_x
+    attempts_beyond_halfway,
+    round(mean_action_x, 4) as mean_action_x,
+    -- A keeper four or more of whose actions read beyond halfway is not playing
+    -- upfield, he is being recorded in the opposing frame. One or two may be
+    -- real, so the bar is set where the evidence is unambiguous. Only
+    -- goalkeepers can be checked this way; the same corruption in outfield
+    -- events is undetectable. See PROBLEMS.md.
+    players.position_code = 'GK'
+        and attempts_beyond_halfway >= {{ var('mirrored_event_floor', 4) }}
+        as has_mirrored_positions
 from pivoted
 left join players using (player_id)
 left join minutes using (match_id, player_id)

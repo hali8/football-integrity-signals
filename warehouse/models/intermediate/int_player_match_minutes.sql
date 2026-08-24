@@ -109,8 +109,15 @@ select
     came_on,
     went_off,
     minutes_are_inferred,
+    -- A missing substitution leaves the player it replaced credited to full
+    -- time, so every window in the match may be too long.
+    bool_or(minutes_are_inferred) over (partition by match_id)
+        as match_has_missing_substitution,
     -- Full time is rounded to 0.1 before the cap, so a full-match player lands
     -- exactly on the match length rather than a tenth above it.
     round(greatest(went_off - came_on, 0), 1) as minutes_played
 from on_off
 where came_on is not null
+  -- One event gives first = last, so the inferred window is 0. That is not a
+  -- short appearance, it is no information: dropped rather than recorded as 0.
+  and not (minutes_are_inferred and went_off <= came_on)

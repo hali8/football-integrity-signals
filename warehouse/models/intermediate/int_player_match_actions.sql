@@ -118,8 +118,18 @@ resolved as (
             when action_type in ('pass', 'goal_kick_short', 'goal_kick_long') then 'pass'
             else action_type
         end as action_group,
-        -- Inference is offered for one leaf and one leaf only.
-        action_type = 'goal_kick_short'
+        -- Inferred only where the source records nothing and the inference is
+        -- validated. Short goal kicks: 94-95% agreement with the tag on passes
+        -- of comparable length. Defensive actions: retaining possession
+        -- reproduces the tag on 92.8% of clearances and 91.2% of interceptions
+        -- that carry one, so the 38% of interceptions Wyscout never scores can
+        -- be filled in rather than dropped. Tackles agree at only 78% and are
+        -- inferred too, which is the weakest link in this metric.
+        (
+            action_type = 'goal_kick_short'
+            or action_type in ('clearance', 'tackle')
+            or action_type like 'interception_as_%'
+        )
             and not has_recorded_outcome
             and retained_possession is not null as has_inferred_outcome
     from categorised
@@ -151,6 +161,11 @@ select
 
     count(*) filter (where list_contains(qualifiers, 'Pass:CROSS')) as crosses,
     count(*) filter (where start_x < 1.0 / 3.0) as in_defensive_third,
+    -- Wyscout mirrors some events into the opposing team's frame, within a
+    -- single match, for some players only. Only visible where we know where a
+    -- player belongs, so it is counted for goalkeepers and left unmeasured for
+    -- everyone else. See assert_no_mirrored_goalkeeper_events.
+    count(*) filter (where start_x > 0.5) as attempts_beyond_halfway,
     -- Goal kicks have no start position, so they weight nothing.
     count(start_x) as attempts_with_position,
     avg(start_x) as mean_start_x

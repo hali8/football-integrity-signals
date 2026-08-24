@@ -222,6 +222,20 @@ models:
       - name: end_y
         description: Null where the event has no end location.
 
+      - name: is_goal
+        description: >
+          The event put the ball in the net. Wyscout tags 101 on two events per
+          goal — the scorer's shot and the conceding keeper's — so counting the
+          tag credits both teams and every match reads as a draw. This counts it
+          once. Own goals are is_own_goal, not this.
+        data_tests: [not_null]
+      - name: is_own_goal
+        description: >
+          Tag 102, on the conceding player's own clearance, interception or
+          pass — never a shot. team_id is who conceded it, so the goal counts
+          for the other side.
+        data_tests: [not_null]
+
       - name: is_successful
         description: Null for 13% of events, where success is not meaningful.
       - name: is_counter_attack

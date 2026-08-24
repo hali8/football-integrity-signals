@@ -42,9 +42,17 @@ models:
       - name: minutes_played
         description: >
           From the lineups and substitutions, capped at the match's own length.
-          For 50 player-matches the substitution is missing from the source and
-          the window is inferred from the player's own events — see
-          int_player_match_minutes.minutes_are_inferred.
+          Null where the substitution is missing upstream and the player has a
+          single event, so no window can be inferred — unknown, not zero.
+      - name: minutes_are_inferred
+        description: >
+          True where the window came from the player's own first and last event
+          because no substitution was recorded. A lower bound.
+      - name: match_has_missing_substitution
+        description: >
+          True for every player in a match where any substitution is missing.
+          The player who was replaced is still credited to full time, so any
+          window in that match may be too long.
         data_tests: [not_null]
       - name: regulation_minutes
         description: >
@@ -60,8 +68,9 @@ models:
         description: >
           minutes_played >= 30, the sample floor for comparing players. A column
           rather than a filter, so the mart keeps every row and the analysis
-          decides. Override with --vars eligible_minutes.
-        data_tests: [not_null]
+          decides. Null where minutes are unknown. Says nothing about whether the
+          minutes are trustworthy — see match_has_missing_substitution. Override
+          with --vars eligible_minutes.
 
       # Counts are never null. A player who did none of something did none of
       # it; null would claim we do not know. Only the rates below are nullable.
@@ -117,6 +126,18 @@ models:
           is inferred.
       - name: touches_in_defensive_third
         description: Actions starting at x < 1/3, with x towards the attacked goal.
+        data_tests: [not_null]
+      - name: attempts_beyond_halfway
+        description: >
+          Actions starting past the halfway line. Only meaningful for
+          goalkeepers, where it detects Wyscout's mirrored coordinates.
+        data_tests: [not_null]
+      - name: has_mirrored_positions
+        description: >
+          True where a goalkeeper has four or more actions beyond halfway —
+          Wyscout recorded them in the opposing frame, so x is wrong rather than
+          missing. Not repairable; exclude the row from x-based metrics. Five
+          player-matches. Undetectable for outfield players.
         data_tests: [not_null]
       - name: mean_action_x
         description: >
