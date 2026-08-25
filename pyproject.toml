@@ -45,6 +45,7 @@ fis-data-dir = "fis.paths:main"
 fis-fetch = "fis.data.fetch:main"
 fis-gen-dbt-docs = "fis.data.dbt_docs:main"
 fis-ingest = "fis.ingest.run:main"
+fis-injection-test = "fis.analysis.injection_test:main"
 fis-sources = "fis.sources:main"
 
 [tool.hatch.build.targets.wheel]
