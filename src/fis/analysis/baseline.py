@@ -1,75 +1,68 @@
 """Per-player baselines, and how far each match departs from them.
 
-The first stage that is not SQL. Everything upstream is dbt; this reads
-``fct_player_match_metrics`` through :mod:`fis.warehouse`, does the statistics in
-pandas, and writes ``fct_player_match_flags`` back.
-
-**A large residual is not evidence of anything.** It says a player's match looked
-unlike their other matches on one measure. Injury, a tactical change, a role
-switch, a red card, an unusual opponent and plain variance all produce the same
-signal. The output is a shortlist to look at, and the evidence columns exist so
-that looking is possible.
-
-One scoring path, two callers
------------------------------
-:func:`score` is the whole pipeline from a mart-shaped frame to flagged rows.
-The CLI calls it; so must anything that measures this detector by perturbing
-data and re-scoring. If a caller re-implemented any step, a sensitivity figure
-would be measuring the gap between two implementations rather than the
-detector. Everything except :func:`load` is pure, so a caller can substitute its
-own frame.
-
-Method
-------
-For each player and metric, the baseline is the **median and MAD of that
-player's other eligible matches** -- leave-current-out, so a match cannot pull
-the line it is measured against. The residual is
-
-    z = (observed - median) / (1.4826 * MAD)
-
-where 1.4826 makes MAD estimate the standard deviation of a normal
-distribution, so z reads on the familiar scale.
-
-Two things the data forces:
-
-* **Small samples pool.** Under ``MIN_OWN_MATCHES`` eligible matches a player's
-  own median is too noisy to test against, so the baseline comes from every
-  eligible player in the same registered position instead. ``baseline_source``
-  records which was used, per row.
-* **Zero MAD.** A player whose metric never varies gives MAD 0 and an infinite
-  z. The position MAD is substituted; where that is also 0 the residual is null
-  rather than invented, and both counts are reported.
+Reads ``fct_player_match_metrics`` via :mod:`fis.warehouse`, scores in pandas,
+writes ``fct_player_match_flags``. Residual: z = (observed - median) /
+(1.4826 * MAD), leave-current-out per player, with the centre shrunk toward the
+position's by an empirical-Bayes weight; an uncomputable or zero MAD falls back
+to the position spread or null.
+A large residual is a shortlist entry, not evidence. :func:`score` is the one
+scoring path every caller (CLI or sensitivity harness) must use.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import zlib
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
+from scipy import stats
 
 from fis import warehouse
 
 #: Scales MAD to a standard deviation under normality, so z reads conventionally.
 MAD_TO_SIGMA = 1.4826
 
-#: Below this many eligible matches, a player's own baseline is too noisy to use
-#: and the position baseline is substituted. Decided up front rather than tuned.
-MIN_OWN_MATCHES = 10
+#: Baselines use matches above this cut; ranking uses the mart's eligibility.
+BASELINE_MIN_MINUTES = 20
 
-#: Share of rows flagged when no rate is given. Not a false-positive rate in the
-#: usual sense -- see :func:`flag`.
+#: Policy floor: matches a player needs (over the baseline cut) to be evaluated
+#: at all. His matches still feed the position pools either way.
+MIN_PLAYER_MATCHES = 5
+
+#: Share of rows flagged when no rate is given -- see :func:`flag`.
 DEFAULT_FLAG_RATE = 0.01
 
 MART = "fct_player_match_metrics"
 FLAGS = "fct_player_match_flags"
 
-#: Rates first, then volumes. Volumes are per 90 so a substitute's twenty
-#: minutes are comparable with a starter's ninety -- otherwise every residual
-#: would be a minutes residual wearing another name.
+#: Rates first, then volumes; volumes are per 90 so exposure is comparable.
 RATE_METRICS = ["pass_completion_pct", "defensive_action_success_pct", "mean_action_x"]
-VOLUME_METRICS = ["passes", "defensive_actions", "crosses", "touches_in_defensive_third"]
+
+#: Success/attempt columns for rates that are true proportions (mean_action_x is not).
+PROPORTIONS = {
+    "pass_completion_pct": ("passes_completed", "passes_with_outcome"),
+    "defensive_action_success_pct": (
+        "defensive_actions_successful",
+        "defensive_actions_with_outcome",
+    ),
+}
+
+#: Sigma corroboration for flags: MAD can collapse on repeated values, sigma cannot.
+CORROBORATING_SIGMA = 3.0
+#: crosses is deliberately absent -- see EXCLUDED_METRICS.
+VOLUME_METRICS = ["passes", "defensive_actions", "touches_in_defensive_third"]
+
+#: Computed by the mart, left out of the residual vector, with the reason.
+EXCLUDED_METRICS = {
+    "crosses_per_90": (
+        "a MAD z overstates the rarity of large values for a zero-inflated "
+        "count, so its scores are not on a comparable surprise scale with the "
+        "rest; the correct treatment is an exposure-adjusted count model"
+    ),
+}
 METRICS = RATE_METRICS + [f"{m}_per_90" for m in VOLUME_METRICS]
 
 KEY_COLUMNS = ["match_id", "player_id", "team_id", "position_code", "minutes_played"]
@@ -83,40 +76,146 @@ def load() -> pd.DataFrame:
 def prepare(frame: pd.DataFrame) -> pd.DataFrame:
     """Eligible rows only, with volume metrics expressed per 90.
 
-    Exposure is capped at regulation length. Uncapped, two matches with the same
-    count differ only by stoppage time, and MAD settles on that difference --
-    reporting a spread orders of magnitude too small. Capped, they are identical
-    and the zero-MAD path handles them.
+    Exposure is capped at regulation length so stoppage-time differences
+    cannot collapse MAD; the zero-MAD path handles the resulting ties.
     """
-    frame = frame[frame["is_eligible"].fillna(False)].copy()
+    frame = frame[frame["minutes_played"] >= BASELINE_MIN_MINUTES].copy()
+    # A missing substitution makes someone's minutes window wrong, and we cannot
+    # tell whose -- so every per-90 metric in the match is unusable.
+    frame = frame[~frame["match_has_missing_substitution"].fillna(False)]
+    # Wyscout mirrors some goalkeeper events into the opposing frame: x is wrong
+    # rather than missing, and not repairable, so position metrics are nulled.
+    mirrored = frame["has_mirrored_positions"].fillna(False)
+    frame.loc[mirrored, ["mean_action_x", "touches_in_defensive_third"]] = np.nan
     exposure = np.minimum(frame["minutes_played"], frame["regulation_minutes"])
     per_90 = 90.0 / exposure
     for metric in VOLUME_METRICS:
         frame[f"{metric}_per_90"] = frame[metric] * per_90
+    # Counted over the baseline cut, so shape and verdict use the same matches.
+    frame["player_baseline_matches"] = frame.groupby("player_id")["match_id"].transform("size")
+    frame["is_scoreable"] = frame["is_eligible"].fillna(False) & (
+        frame["player_baseline_matches"] >= MIN_PLAYER_MATCHES
+    )
     return frame
 
 
-def _leave_one_out(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Median and MAD of every element except the one at each position."""
+def informativeness(frame: pd.DataFrame, metric: str) -> float:
+    """How much a player's own history says about him, beyond his position.
+
+    Between-player over within-player variance, with the sampling noise of the
+    player means (mean(within/n)) subtracted from the numerator.
+    """
+    per_player = frame.groupby("player_id")[metric]
+    counts = per_player.count()
+    # Both terms from the same players: a single-match player has no variance,
+    # so he cannot enter the correction and must not enter the numerator.
+    usable = counts[counts >= 2].index
+    if not len(usable):
+        return 0.0
+    variances = per_player.var(ddof=1).loc[usable]
+    within = variances.mean()
+    if not within or not np.isfinite(within) or within <= 0:
+        return 0.0
+    between = per_player.mean().loc[usable].var(ddof=1) - (variances / counts[usable]).mean()
+    return float(max(between, 0.0) / within)
+
+
+#: Bootstrap resamples behind each player's MAD variance.
+SCALE_DRAWS = 2000
+
+
+def _mad(values: np.ndarray) -> float:
+    return float(np.median(np.abs(values - np.median(values))))
+
+
+def scale_ratio(frame: pd.DataFrame, metric: str, draws: int = SCALE_DRAWS) -> float:
+    """How much a player's own SPREAD says about him, beyond his position.
+
+    The scale twin of :func:`informativeness`. The within term is bootstrapped
+    (a jackknife is inconsistent for median-based statistics). The recovered
+    ratio attenuates, so it is a floor, not a measure -- the safe direction
+    for a shrinkage weight.
+    """
+    spreads, variances, sizes = [], [], []
+    for player, group in frame.groupby("player_id"):
+        values = group[metric].dropna().to_numpy(dtype=float)
+        if len(values) < 3:
+            continue
+        rng = np.random.default_rng(zlib.crc32(f"{player}:{metric}".encode()))
+        drawn = values[rng.integers(0, len(values), size=(draws, len(values)))]
+        replicates = np.median(np.abs(drawn - np.median(drawn, axis=1, keepdims=True)), axis=1)
+        spreads.append(_mad(values))
+        variances.append(float(replicates.var(ddof=1)))
+        sizes.append(len(values))
+    if len(spreads) < 2:
+        return 0.0
+    spreads = np.asarray(spreads)
+    variances = np.asarray(variances)
+    within = float((np.asarray(sizes, dtype=float) * variances).mean())
+    if not within or not np.isfinite(within) or within <= 0:
+        return 0.0
+    between = float(spreads.var(ddof=1) - variances.mean())
+    return float(max(between, 0.0) / within)
+
+
+def own_weight(n: np.ndarray | int, ratio: float) -> np.ndarray | float:
+    """Share of a player's baseline taken from his own matches.
+
+    The empirical-Bayes weight r*n/(r*n+1), r measured per position x metric,
+    so how early a player's own history is trusted depends on the metric.
+    ratio=inf (no ratio available) is the limit, weight 1, not inf/inf --
+    np.where evaluates both branches, so the division is masked, not skipped.
+    """
+    with np.errstate(invalid="ignore"):
+        return np.where(np.isfinite(ratio), ratio * n / (ratio * n + 1.0), 1.0)
+
+
+def _leave_one_out(
+    values: np.ndarray, centre: float = np.nan, ratio: float = np.inf
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Shrunk median, and MAD about it, of every element except each position.
+
+    The MAD is taken around the SHRUNK centre, so it widens in proportion to
+    how far the baseline was pulled.
+    """
     n = len(values)
     medians = np.full(n, np.nan)
     mads = np.full(n, np.nan)
+    weights = np.full(n, np.nan)
     for i in range(n):
         others = np.delete(values, i)
         others = others[~np.isnan(others)]
         if len(others) == 0:
             continue
         median = np.median(others)
+        if np.isfinite(centre) and np.isfinite(ratio):
+            weight = own_weight(len(others), ratio)
+            median = weight * median + (1.0 - weight) * centre
+            weights[i] = weight
         medians[i] = median
         mads[i] = np.median(np.abs(others - median))
-    return medians, mads
+    return medians, mads, weights
+
+
+def _leave_one_out_sigma(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Mean and standard deviation of every element except the one at each position."""
+    n = len(values)
+    means = np.full(n, np.nan)
+    sigmas = np.full(n, np.nan)
+    for i in range(n):
+        others = np.delete(values, i)
+        others = others[~np.isnan(others)]
+        if len(others) < 2:
+            continue
+        means[i] = others.mean()
+        sigmas[i] = others.std(ddof=1)
+    return means, sigmas
 
 
 def position_baselines(frame: pd.DataFrame) -> pd.DataFrame:
     """Median and MAD per position, over every eligible match.
 
-    Not leave-one-out: these pool thousands of rows, so removing one moves the
-    median by less than the rounding in the metric itself.
+    Not leave-one-out: pooled over enough rows that removing one is negligible.
     """
     rows = []
     for position, group in frame.groupby("position_code"):
@@ -130,39 +229,180 @@ def position_baselines(frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("position_code")
 
 
-def residuals(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+def overdispersion(frame: pd.DataFrame, metric: str) -> float:
+    """A proportion's excess variance over binomial, as an intra-class correlation.
+
+    WITHIN-player (each player's variance about his own rate), never between --
+    between-player spread is the informativeness signal, not overdispersion.
+    Pooled as a ratio of sums; only the pooled result is clamped.
+    """
+    successes, attempts = PROPORTIONS[metric]
+    excess = scale = 0.0
+    for _, group in frame.groupby("player_id"):
+        n = group[attempts].to_numpy(dtype=float)
+        k = group[successes].to_numpy(dtype=float)
+        keep = n > 0
+        n, k = n[keep], k[keep]
+        if len(n) < 2:
+            continue
+        rate = k.sum() / n.sum()
+        if not 0 < rate < 1:
+            continue
+        excess += float((k / n).var(ddof=1) - np.mean(rate * (1 - rate) / n))
+        scale += float(np.mean(rate * (1 - rate) * (n - 1) / n))
+    if scale <= 0:
+        return 0.0
+    return float(min(max(excess / scale, 0.0), 0.99))
+
+
+def _beta_binomial(
+    frame: pd.DataFrame,
+    metric: str,
+    z: np.ndarray,
+    rho: np.ndarray,
+    pool: np.ndarray,
+    ratio: np.ndarray,
+) -> tuple[np.ndarray, int]:
+    """Replace the MAD residual for a proportion with a beta-binomial tail.
+
+    One estimator at every denominator -- no attempts threshold. The rate is
+    EB-shrunk toward the position's, so the location shrinkage survives here.
+    """
+    successes, attempts = PROPORTIONS[metric]
+    k = frame[successes].to_numpy(dtype=float)
+    n = frame[attempts].to_numpy(dtype=float)
+    totals = frame.assign(_k=k, _n=n).groupby("player_id")[["_k", "_n"]].transform("sum")
+    # Leave-current-out, so a match cannot set the rate it is measured against.
+    others_n = totals["_n"].to_numpy() - n
+    own = (totals["_k"].to_numpy() - k) / np.where(others_n > 0, others_n, np.nan)
+
+    matches = frame.groupby("player_id")["match_id"].transform("size").to_numpy() - 1
+    weight = np.where(np.isfinite(ratio), own_weight(matches, ratio), 1.0)
+    rate = np.where(np.isfinite(own), weight * own + (1.0 - weight) * pool, pool)
+
+    usable = (n > 0) & np.isfinite(rate) & (rate > 0) & (rate < 1)
+    if not usable.any():
+        return z, 0
+    k, n, rate = k[usable], n[usable], rate[usable]
+    lower = np.empty(len(k))
+    upper = np.empty(len(k))
+    # rho = 0 is the binomial limit, taken as a limit rather than a branch.
+    flat = rho[usable] <= 1e-9
+    if flat.any():
+        lower[flat] = stats.binom.cdf(k[flat], n[flat], rate[flat])
+        upper[flat] = stats.binom.sf(k[flat] - 1, n[flat], rate[flat])
+    if (~flat).any():
+        concentration = 1.0 / rho[usable][~flat] - 1.0
+        a = rate[~flat] * concentration
+        b = (1.0 - rate[~flat]) * concentration
+        lower[~flat] = stats.betabinom.cdf(k[~flat], n[~flat], a, b)
+        upper[~flat] = stats.betabinom.sf(k[~flat] - 1, n[~flat], a, b)
+    # Two-sided: whichever tail the result sits in, signed to keep the direction.
+    tail = np.minimum(lower, upper)
+    signed = np.where(lower <= upper, -1.0, 1.0)
+    z = z.copy()
+    z[usable] = signed * np.abs(stats.norm.ppf(np.clip(tail, 1e-12, 0.5)))
+    return z, int(usable.sum())
+
+
+def hyperparameters(frame: pd.DataFrame, jobs: int = -1) -> dict:
+    """Every position-level shrinkage quantity, measured once from one frame.
+
+    All must come from the CLEAN reference, never a frame carrying injections;
+    grouping them makes that one decision. Also the expensive step, so a
+    harness computes this once and hands it back to :func:`residuals`.
+    """
+    groups = dict(tuple(frame.groupby("position_code")))
+    pairs = [(position, metric) for position in groups for metric in METRICS]
+    scales = Parallel(n_jobs=jobs)(
+        delayed(scale_ratio)(groups[position], metric) for position, metric in pairs
+    )
+    rates, spread = {}, {}
+    for metric in PROPORTIONS:
+        successes, attempts = PROPORTIONS[metric]
+        for position, group in groups.items():
+            total = group[attempts].sum()
+            rates[(position, metric)] = group[successes].sum() / total if total > 0 else np.nan
+            spread[(position, metric)] = overdispersion(group, metric)
+    return {
+        "positions": position_baselines(frame),
+        "ratios": {(p, m): informativeness(groups[p], m) for p, m in pairs},
+        "scales": dict(zip(pairs, scales, strict=True)),
+        "rates": rates,
+        "overdispersion": spread,
+        "codes": tuple(groups),
+    }
+
+
+def residuals(
+    frame: pd.DataFrame,
+    reference: pd.DataFrame | None = None,
+    fitted: dict | None = None,
+) -> tuple[pd.DataFrame, dict[str, int]]:
     """Attach a z per metric, plus which baseline each row was measured against.
 
-    Returns the frame and the counts worth reporting: how many rows were pooled,
-    how often a zero MAD forced a substitution, and how many residuals could not
-    be computed at all.
+    ``reference`` is the frame the position-level quantities derive from
+    (default: ``frame``); an injection harness passes the clean frame so a
+    planted row cannot shift its own reference. ``fitted`` accepts them
+    precomputed -- see :func:`hyperparameters`. Also returns counts.
     """
-    positions = position_baselines(frame)
+    fitted = fitted or hyperparameters(frame if reference is None else reference)
+    positions = fitted["positions"]
+    ratios, scale_ratios = fitted["ratios"], fitted["scales"]
+    codes = fitted["codes"]
     frame = frame.sort_values(["player_id", "match_id"]).reset_index(drop=True)
 
-    counts = {"own_rows": 0, "pooled_rows": 0, "zero_mad_substituted": 0, "unusable": 0}
+    counts = {
+        "own_rows": 0,
+        "zero_mad_substituted": 0,
+        "position_substituted": 0,
+        "unusable": 0,
+        "scale_ratios": scale_ratios,
+    }
     eligible_per_player = frame.groupby("player_id")["match_id"].transform("size")
-    use_own = eligible_per_player >= MIN_OWN_MATCHES
-    frame["baseline_source"] = np.where(use_own, "player", "position")
-    frame["baseline_matches"] = np.where(use_own, eligible_per_player - 1, np.nan)
-    counts["own_rows"] = int(use_own.sum())
-    counts["pooled_rows"] = int((~use_own).sum())
+    frame["baseline_matches"] = eligible_per_player - 1
+    counts["own_rows"] = len(frame)
 
-    pooled = ~use_own.to_numpy()
     for metric in METRICS:
         median = np.full(len(frame), np.nan)
         mad = np.full(len(frame), np.nan)
+        mean = np.full(len(frame), np.nan)
+        sigma = np.full(len(frame), np.nan)
+        weight = np.full(len(frame), np.nan)
 
-        for index in frame.loc[use_own].groupby("player_id").groups.values():
+        for index in frame.groupby("player_id").groups.values():
             at = frame.index.get_indexer(index)
-            own_median, own_mad = _leave_one_out(frame.loc[index, metric].to_numpy())
+            values = frame.loc[index, metric].to_numpy()
+            position = frame.loc[index[0], "position_code"]
+            own_median, own_mad, own_w = _leave_one_out(
+                values,
+                centre=positions[f"{metric}__median"].get(position, np.nan),
+                ratio=ratios.get((position, metric), np.inf),
+            )
             median[at] = own_median
             mad[at] = own_mad
+            weight[at] = own_w
+            own_mean, own_sd = _leave_one_out_sigma(values)
+            mean[at] = own_mean
+            sigma[at] = own_sd
 
         position_median = frame["position_code"].map(positions[f"{metric}__median"]).to_numpy()
         position_mad = frame["position_code"].map(positions[f"{metric}__mad"]).to_numpy()
-        median[pooled] = position_median[pooled]
-        mad[pooled] = position_mad[pooled]
+
+        # Scale shrinkage: MAD blended toward the position spread, applied
+        # before substitution and before the zero-MAD path.
+        scale_weight = own_weight(
+            (eligible_per_player - 1).to_numpy(dtype=float),
+            frame["position_code"]
+            .map({position: scale_ratios[(position, metric)] for position in codes})
+            .to_numpy(dtype=float),
+        )
+        mad = np.where(np.isnan(mad), mad, scale_weight * mad + (1.0 - scale_weight) * position_mad)
+        # Substitute where the personal quantity is uncomputable, never by
+        # gate membership.
+        counts["position_substituted"] += int(np.isnan(median).sum())
+        median = np.where(np.isnan(median), position_median, median)
+        mad = np.where(np.isnan(mad), position_mad, mad)
 
         # A metric that never varies gives MAD 0 and an infinite z. Fall back to
         # the position spread; where that is 0 too, say nothing.
@@ -173,8 +413,34 @@ def residuals(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
 
         observed = frame[metric].to_numpy()
         z = (observed - median) / (MAD_TO_SIGMA * mad)
+
+        if metric in PROPORTIONS:
+
+            def per_position(table: dict, default: float = np.nan) -> np.ndarray:
+                return (
+                    frame["position_code"]
+                    .map({p: table.get((p, metric), default) for p in codes})
+                    .to_numpy(dtype=float)
+                )
+
+            z, swapped = _beta_binomial(
+                frame,
+                metric,
+                z,
+                rho=per_position(fitted["overdispersion"], 0.0),
+                pool=per_position(fitted["rates"]),
+                ratio=per_position(ratios, np.inf),
+            )
+            counts["binomial_rows"] = counts.get("binomial_rows", 0) + swapped
+
         counts["unusable"] += int((np.isnan(z) & ~np.isnan(observed)).sum())
         frame[f"z_{metric}"] = z
+        # Position spread corroborates where the LOO sigma is uncomputable.
+        sigma = np.where(np.isnan(sigma), position_mad * MAD_TO_SIGMA, sigma)
+        mean = np.where(np.isnan(mean), position_median, mean)
+        frame[f"sigma_{metric}"] = (observed - mean) / np.where(sigma > 0, sigma, np.nan)
+        # EB weight of this row's baseline: continuous provenance.
+        frame[f"weight_{metric}"] = weight
 
     absolute = frame[[f"z_{m}" for m in METRICS]].abs()
     frame["max_abs_z"] = absolute.max(axis=1)
@@ -183,41 +449,67 @@ def residuals(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     return frame, counts
 
 
-def flag(frame: pd.DataFrame, rate: float = DEFAULT_FLAG_RATE) -> pd.DataFrame:
-    """Mark the top ``rate`` share of rows by ``max_abs_z``.
+def joint_threshold(scores: pd.Series, corroborated: pd.Series, rate: float) -> float:
+    """Score threshold such that (score >= t) & corroborated flags ``rate`` of rows.
 
-    Called a false-positive rate loosely, and it is not one. With no labelled
-    cases there is nothing to be false against, so what this fixes is the
-    **flag rate**: the share of rows sent for review. Whether those are false
-    can only be settled by review, or by injecting known perturbations and
-    measuring how many are recovered.
-
-    The threshold is empirical rather than a fixed z, because the residual
-    distribution is not normal -- pooled rows and heavy tails both push a fixed
-    cutoff around. Taking a quantile fixes the review workload instead, which is
-    the quantity anyone actually has to plan for.
+    Set within the corroborated rows, so the joint rule delivers the configured
+    share; set on the score alone it would only be an upper bound. NaN when
+    nothing can be flagged.
     """
+    scoreable = scores.notna()
+    gated = scores[corroborated & scoreable].sort_values(ascending=False)
+    target = int(round(rate * int(scoreable.sum())))
+    if target and len(gated):
+        return float(gated.iloc[min(target, len(gated)) - 1])
+    return float("nan")
+
+
+def flag(frame: pd.DataFrame, rate: float = DEFAULT_FLAG_RATE) -> pd.DataFrame:
+    """Flag ``rate`` of scoreable rows: highest ``max_abs_z``, sigma-corroborated."""
     if not 0 < rate < 1:
         raise ValueError(f"flag rate must be between 0 and 1, got {rate}")
     frame = frame.copy()
-    scored = frame["max_abs_z"].dropna()
-    threshold = float(np.quantile(scored, 1 - rate)) if len(scored) else np.nan
+    # Sigma on the metric that drove max_abs_z, not whichever metric is widest.
+    z_columns = [f"z_{m}" for m in METRICS]
+    driver = frame[z_columns].abs().idxmax(axis=1).str.removeprefix("z_")
+    frame["driving_metric"] = driver
+    frame["sd_from_mean"] = [
+        frame.at[i, f"sigma_{m}"] if isinstance(m, str) else np.nan for i, m in driver.items()
+    ]
+    frame["baseline_weight"] = [
+        frame.at[i, f"weight_{m}"] if isinstance(m, str) else np.nan for i, m in driver.items()
+    ]
+    corroborated = frame["sd_from_mean"].abs() >= CORROBORATING_SIGMA
+    threshold = joint_threshold(frame["max_abs_z"], corroborated, rate)
     frame["flag_threshold"] = threshold
-    frame["is_flagged"] = frame["max_abs_z"] >= threshold
+    frame["is_flagged"] = (frame["max_abs_z"] >= threshold) & corroborated
     return frame
 
 
 def evidence(frame: pd.DataFrame) -> pd.DataFrame:
     """The published columns: keys, which baseline, the evidence, the verdict."""
-    baseline = ["baseline_source", "baseline_matches", "metrics_scored"]
-    per_metric = [c for metric in METRICS for c in (metric, f"z_{metric}")]
-    verdict = ["max_abs_z", "mean_abs_z", "flag_threshold", "is_flagged"]
+    baseline = ["baseline_matches", "baseline_weight", "metrics_scored"]
+    per_metric = [c for metric in METRICS for c in (metric, f"z_{metric}", f"sigma_{metric}")]
+    verdict = [
+        "max_abs_z",
+        "mean_abs_z",
+        "driving_metric",
+        "sd_from_mean",
+        "flag_threshold",
+        "is_flagged",
+    ]
     return frame[KEY_COLUMNS + baseline + per_metric + verdict]
 
 
 def score(frame: pd.DataFrame, rate: float = DEFAULT_FLAG_RATE) -> tuple[pd.DataFrame, dict]:
-    """Mart-shaped frame in, flagged rows out. The path every caller must use."""
+    """Mart-shaped frame in, flagged rows out. The path every caller must use.
+
+    Baselines are built from every match above BASELINE_MIN_MINUTES; only
+    eligible rows are published and ranked.
+    """
     scored, counts = residuals(prepare(frame))
+    counts["baseline_rows"] = len(scored)
+    scored = scored[scored["is_scoreable"]]
     return evidence(flag(scored, rate)), counts
 
 
@@ -235,11 +527,12 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"{len(flagged):,} eligible player-matches, {flagged['player_id'].nunique():,} players")
     print(
-        f"  baselines: {counts['own_rows']:,} from the player's own matches, "
-        f"{counts['pooled_rows']:,} pooled to position (<{MIN_OWN_MATCHES} eligible)"
+        f"  baselines: {counts['own_rows']:,} rows, own-weight median "
+        f"{flagged['baseline_weight'].median():.2f}"
     )
     print(
-        f"  zero-MAD substitutions: {counts['zero_mad_substituted']:,}; "
+        f"  position-substituted: {counts['position_substituted']:,}; "
+        f"zero-MAD substitutions: {counts['zero_mad_substituted']:,}; "
         f"residuals left null: {counts['unusable']:,}"
     )
     print(
@@ -251,15 +544,26 @@ def main(argv: list[str] | None = None) -> int:
         warehouse.publish(FLAGS, flagged)
         print(f"  wrote {FLAGS}: {len(flagged):,} rows, {len(flagged.columns)} columns")
 
-    top = flagged.sort_values("max_abs_z", ascending=False).head(args.top)
+    # Ranked by z, but only rows sigma corroborates -- the review list, not
+    # a diagnostic of what the corroboration rejected.
+    top = (
+        flagged[flagged["is_flagged"]]
+        .sort_values("max_abs_z", ascending=False)
+        .head(args.top)
+        .copy()
+    )
+    top["observed"] = [top.at[i, m] for i, m in top["driving_metric"].items()]
+    top["metric"] = top["driving_metric"].str.replace("_per_90", "/90", regex=False)
     columns = [
         "match_id",
         "player_id",
         "position_code",
         "minutes_played",
-        "baseline_source",
+        "metric",
+        "observed",
         "max_abs_z",
-        "mean_abs_z",
+        "sd_from_mean",
+        "is_flagged",
     ]
     print(f"\nTop {args.top} by |z|:")
     print(top[columns].to_string(index=False, float_format=lambda v: f"{v:.2f}"))
