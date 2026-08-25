@@ -508,6 +508,23 @@ clearances are already in the sum and one touch would otherwise count twice.
 Naming the host rather than filtering it means a new pass or defensive metric
 meets the distinction instead of inheriting the double-count.
 
+### What the residual vector leaves out
+
+`crosses/90` is excluded from the v1 residual vector: a MAD z-score overstates
+the rarity of large values for a zero-inflated count, so its scores aren't on a
+comparable surprise scale with the other metrics. The correct treatment is an
+exposure-adjusted count model, deferred.
+
+The symptom was that it drove 7 of the top 20 while being unscoreable for 52% of
+player-matches — most players never cross, so their MAD is zero, and the
+occasional crossers have a baseline like `0, 0, 1, 1` whose MAD of 0.5 is the
+coarsest non-zero value the metric can produce. An 11-cross match divided by
+that reads z = 14; a count model puts the same match at 5.6, and the empirical
+tail at about 3.2.
+
+`crosses` remains in the mart as a count. It is the per-90 residual that is
+withdrawn, not the measurement.
+
 ### Open questions
 
 - **Recoveries have no outcome at all** in the source: no accurate tag is ever
@@ -612,3 +629,12 @@ set. What it has cost more than it looks: the ingest carries four workarounds fo
 kloppy defects, one of which was silently deleting 4,400 events, and two of the
 metric definitions turn on Wyscout conventions that are documented nowhere. Those
 are written up where they bite, not collected in one place.
+
+A scoring layer sits on top of the mart (`src/fis/analysis/`: `baseline.py`,
+`heldout.py`, `injection_test.py`) — per-player residuals with empirical-Bayes
+shrinkage, an isolation-forest comparison, and a sigma-calibrated injection
+harness for measuring detector sensitivity. It is undocumented here so far;
+the code is the only reference. As of 2026-08-25 it is mid-revision (a match-
+count gate was replaced with continuous shrinkage plus a stated evaluation
+floor, and a validation run is in progress) and not yet settled enough to
+write up.
