@@ -1,9 +1,7 @@
 {#
-  One row per player-match. A thin slice: four metrics, enough to prove the
-  spine, not the full set. Definitions are in the README -- the SQL implements
-  them, it does not decide them.
-
-  Rates are null, not 0, where the denominator is 0, so "no attempts" is
+  One row per player-match; a thin metric slice proving the spine.
+  Definitions are in the README -- the SQL implements them, it does not decide
+  them. Rates are null, not 0, where the denominator is 0, so "no attempts" is
   distinguishable from "attempted and never succeeded".
 #}
 {{ config(materialized = 'table') }}
@@ -47,14 +45,12 @@ pivoted as (
         player_id,
         team_id,
 
-        -- Counts are coalesced to 0: a filtered sum matching no row returns
-        -- null, which would say "unknown" about a player who simply did not do
-        -- it. Rates below stay null -- there the distinction is real.
+        -- Counts are coalesced to 0 because a filtered sum matching no row
+        -- returns null; rates below stay null -- there the distinction is real.
         sum(attempts) as actions,
 
-        -- Passes include goal kicks: the pass happened and is countable. What
-        -- goal kicks lack is a recorded outcome, which is a denominator
-        -- question, handled below.
+        -- Passes include goal kicks; their missing recorded outcome is a
+        -- denominator question, handled below.
         coalesce(sum(attempts) filter (where is_pass), 0) as passes,
         coalesce(sum(attempts_with_recorded_outcome + attempts_with_inferred_outcome)
             filter (where is_pass), 0) as passes_with_outcome,
@@ -64,18 +60,16 @@ pivoted as (
             filter (where is_pass), 0) as passes_outcome_inferred,
         sum(crosses) as crosses,
 
-        -- Spec definition: tackle, interception, clearance -- counting an
-        -- interception recorded as a clearance once. The clearance-hosted leaf
-        -- is left out because its host is already in the sum.
+        -- Spec definition: tackle, interception, clearance. The clearance-hosted
+        -- interception leaf is left out because its host is already in the sum.
         coalesce(sum(attempts) filter (
             where action_type in (
                 'tackle', 'clearance',
                 'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
             )
         ), 0) as defensive_actions,
-        -- Recorded plus inferred, as with passes. Wyscout scores no outcome for
-        -- 38% of interceptions, so recorded-only left 3,872 player-matches with
-        -- no rate at all; possession-continuity fills those in.
+        -- Recorded plus inferred, as with passes; possession-continuity fills
+        -- in the outcomes Wyscout never scores.
         coalesce(sum(attempts_with_recorded_outcome + attempts_with_inferred_outcome) filter (
             where action_type in (
                 'tackle', 'clearance',
@@ -131,9 +125,8 @@ select
     players.position,
     players.position_code,
 
-    -- How long they were on. From the lineups and substitutions, capped at the
-    -- match's own length; null for 50 player-matches that have events but no
-    -- lineup entry, which is an upstream gap and not something to estimate.
+    -- Null for player-matches that have events but no lineup entry: an
+    -- upstream gap, not something to estimate.
     minutes.started,
     minutes.minutes_played,
     minutes.minutes_are_inferred,
@@ -141,11 +134,8 @@ select
     coalesce(minutes.match_has_missing_substitution, false)
         as match_has_missing_substitution,
     matches.regulation_minutes,
-    -- Eligibility is a column, not a filter: the mart keeps every row and the
-    -- analysis decides. Null where minutes are unknown, so "too few minutes"
-    -- and "we do not know" stay apart. Says nothing about whether the minutes
-    -- are trustworthy: that is match_has_missing_substitution, and it matters
-    -- only to analysis that divides by time.
+    -- A column, not a filter: the mart keeps every row and the analysis
+    -- decides. Null where minutes are unknown, so it stays apart from "too few".
     minutes.minutes_played >= {{ var('eligible_minutes', 30) }} as is_eligible,
 
     actions,
@@ -173,11 +163,8 @@ select
     round(mean_action_x, 4) as mean_action_x,
     attempts_with_position,
     sum_start_x_in_defensive_third,
-    -- A keeper four or more of whose actions read beyond halfway is not playing
-    -- upfield, he is being recorded in the opposing frame. One or two may be
-    -- real, so the bar is set where the evidence is unambiguous. Only
-    -- goalkeepers can be checked this way; the same corruption in outfield
-    -- events is undetectable. See PROBLEMS.md.
+    -- A keeper at or above the floor is being recorded in the opposing frame,
+    -- not playing upfield. Detectable only for goalkeepers. See PROBLEMS.md.
     players.position_code = 'GK'
         and attempts_beyond_halfway >= {{ var('mirrored_event_floor', 4) }}
         as has_mirrored_positions

@@ -1,38 +1,16 @@
 {#
   One row per player, match and action type, with attempts and outcomes.
-
-  Action types are a project decision, not kloppy's taxonomy: they group the
-  event types that answer the same question. `action_group` rolls the leaves up,
-  so a metric names either a leaf or a group and never a hardcoded list.
-
-  Leaves exist wherever counting two things as one would hide something:
-
-  * `goal_kick_short` / `goal_kick_long` -- Wyscout never tags a goal kick for
-    accuracy. Short ones are retained 95-97% of the time and their outcome is
-    inferable; long ones are contested 50/50s and it is not. Both are passes.
-  * `interception_as_*` -- Wyscout V2 has no interception event type. kloppy
-    builds one from tag 1401 on a pass, clearance, duel or touch. Naming the
-    host keeps `defensive_actions` from counting a cleared interception twice.
-
-  Outcomes come from three places and are kept apart, so any consumer can use
-  the recorded ones alone:
-
-  * recorded -- Wyscout tags 1801/1802. Also the only outcome clearances have,
-    since kloppy hardcodes their result to None.
-  * inferred -- short goal kicks only, from whether the same team makes the next
-    deliberate action. That rule agrees with Wyscout on 94-95% of labelled
-    passes of comparable length. Never mixed into the recorded counts.
-  * neither -- long goal kicks, and event types the source never scores.
+  Action types are a project taxonomy, not kloppy's; `action_group` rolls the
+  leaves up so a metric names a leaf or a group, never a hardcoded list.
+  Outcomes are kept apart by provenance -- recorded (Wyscout tags 1801/1802),
+  inferred (validated possession-continuity rules), or neither -- so any
+  consumer can use the recorded ones alone. See PROBLEMS.md.
 #}
 
-{#- End of a short goal kick, normalised. About 31 m from the goal line, where
-    the retention curve breaks: 95.1% below it, 57.5% above. No upstream subtype
-    exists, so this line is ours to draw. See PROBLEMS.md. -#}
+{#- End x of a short goal kick, where the retention curve breaks; see PROBLEMS.md. -#}
 {% set short_goal_kick_max_x = 0.3 %}
 
-{#- Events that show who has the ball. Duels are excluded because Wyscout
-    records them once per team, so the pair's order, not play, would decide.
-    Synthesised interceptions are excluded as they duplicate their host. -#}
+{#- Events showing who has the ball; duels and synthesised interceptions excluded. -#}
 {% set deliberate = "('PASS', 'SHOT', 'CLEARANCE', 'RECOVERY', 'INTERCEPTION')" %}
 
 with events as (
@@ -119,12 +97,7 @@ resolved as (
             else action_type
         end as action_group,
         -- Inferred only where the source records nothing and the inference is
-        -- validated. Short goal kicks: 94-95% agreement with the tag on passes
-        -- of comparable length. Defensive actions: retaining possession
-        -- reproduces the tag on 92.8% of clearances and 91.2% of interceptions
-        -- that carry one, so the 38% of interceptions Wyscout never scores can
-        -- be filled in rather than dropped. Tackles agree at only 78% and are
-        -- inferred too, which is the weakest link in this metric.
+        -- validated against the tags it does record; see PROBLEMS.md.
         (
             action_type = 'goal_kick_short'
             or action_type in ('clearance', 'tackle')
@@ -162,10 +135,8 @@ select
     count(*) filter (where list_contains(qualifiers, 'Pass:CROSS')) as crosses,
     count(*) filter (where start_x < 1.0 / 3.0) as in_defensive_third,
     sum(start_x) filter (where start_x < 1.0 / 3.0) as sum_start_x_in_defensive_third,
-    -- Wyscout mirrors some events into the opposing team's frame, within a
-    -- single match, for some players only. Only visible where we know where a
-    -- player belongs, so it is counted for goalkeepers and left unmeasured for
-    -- everyone else. See assert_no_mirrored_goalkeeper_events.
+    -- Wyscout mirrors some events into the opposing team's frame; detectable
+    -- only for goalkeepers. See assert_no_mirrored_goalkeeper_events.
     count(*) filter (where start_x > 0.5) as attempts_beyond_halfway,
     -- Goal kicks have no start position, so they weight nothing.
     count(start_x) as attempts_with_position,

@@ -1,31 +1,11 @@
 """Targeted repairs for defects hit when deserialising this Wyscout dataset.
 
-Applied lazily and specifically. :func:`load_match` first tries an ordinary
-``wyscout.load``; only when that fails with a *recognised* signature does it
-apply the matching repair and retry. Anything unrecognised is re-raised
-untouched, so a new defect surfaces as a failure rather than being silently
-papered over.
-
-Four defects occur across the 1941 matches. The first two raise an identical
-``TypeError: 'NoneType' object is not subscriptable``, so they are told apart by
-the kloppy function that raised, not by the message -- see :func:`_classify`.
-
-=====================  =====  ============================================
-defect                 files  cause
-=====================  =====  ============================================
-EXTRA_TIME_PERIOD         10  kloppy: deserializer_v2 does ``int("E1")``
-SHOT_AS_FINAL_EVENT        6  kloppy: ``_parse_shot`` lookahead is unguarded
-NULL_ROSTER_ENTRY         22  upstream data: a ``null`` entry in ``players``
-LOST_INTERCEPTION_HOST   255  kloppy: ``events[:-1]`` drops the wrong event
-=====================  =====  ============================================
-
-All four are verified lossless on this dataset; see the README.
-
-LOST_INTERCEPTION_HOST raises nothing -- it silently deletes 283 real events --
-so it is found by inspecting the loaded dataset rather than by catching. The
-detection is the fix's own off switch: a corrected kloppy produces no orphans
-and the repair does not run. ``tests/test_kloppy_workarounds.py`` is what tells
-you the others have become obsolete.
+:func:`load_match` tries a plain ``wyscout.load`` and repairs only *recognised*
+failure signatures (see :func:`_classify`); anything unrecognised is re-raised.
+Three defects raise; LOST_INTERCEPTION_HOST silently deletes events, so it is
+found by inspecting the loaded dataset -- a fixed kloppy yields no orphans and
+that repair self-disables. ``tests/test_kloppy_workarounds.py`` is what tells
+you the others have become obsolete. All four verified lossless; see the README.
 """
 
 from __future__ import annotations
@@ -40,10 +20,8 @@ import kloppy
 from kloppy import wyscout
 from kloppy.infra.serializers.event.wyscout import deserializer_v2 as _d2
 
-#: kloppy release these repairs were written and verified against. They reach
-#: into private internals, so a different version is worth flagging -- though the
-#: real safety net is _classify(), which stops recognising anything if those
-#: internals move, turning a silent mis-repair into a plain failure.
+#: kloppy release these repairs were verified against. They reach into private
+#: internals, so any other version warrants a warning and re-verification.
 TESTED_KLOPPY_VERSION = "3.19.0"
 
 EXTRA_TIME_PERIOD = "extra-time-period"
@@ -54,9 +32,8 @@ LOST_INTERCEPTION_HOST = "lost-interception-host"
 #: Only the raising defects; LOST_INTERCEPTION_HOST is found after a clean load.
 ALL_DEFECTS = (EXTRA_TIME_PERIOD, SHOT_AS_FINAL_EVENT, NULL_ROSTER_ENTRY)
 
-#: Wyscout's "interception" tag and the Duel event id, as literals for the same
-#: reason as PERIOD_IDS -- an import of a moved private name would fail every
-#: match, not just the affected ones. test_wyscout_constants guards them.
+#: Wyscout's "interception" tag and the Duel event id. Literals, not kloppy
+#: imports: a moved private name must not fail every match. Guarded by tests.
 INTERCEPTION_TAG = 1401
 DUEL_EVENT_ID = 1
 
@@ -64,24 +41,17 @@ DUEL_EVENT_ID = 1
 #: clearance. The id after it is the host event's own.
 SYNTHESISED_PREFIX = "interception-"
 
-#: Period ordinals for the codes deserializer_v2 cannot parse. These match
-#: kloppy's own canonical mapping in deserializer_v3._parse_period_id, so a fixed
-#: V2 deserializer will produce the same period_id values we do and an upgrade
-#: cannot silently shift the data. Deliberately a literal rather than an import:
-#: _parse_period_id is private, and an import would fail for every match rather
-#: than just the ones needing repair. test_period_ids_match_kloppy guards it.
+#: Period ordinals for codes deserializer_v2 cannot parse. Must match kloppy's
+#: deserializer_v3._parse_period_id so a fixed V2 produces identical period_ids;
+#: kept as literals (the name is private) and guarded by test_period_ids_match_kloppy.
 PERIOD_IDS = {"E1": 3, "E2": 4, "P": 5}
 
-#: V2 derives the period with ``int(matchPeriod.replace("H", ""))``, so feeding it
-#: "3H" yields 3. matchPeriod is read in exactly two places in deserializer_v2,
-#: both only to derive period_id, which is why rewriting the string is a complete
-#: fix rather than a patch of a single call site.
+#: V2 derives the period with ``int(matchPeriod.replace("H", ""))`` and reads
+#: matchPeriod only for period_id, so rewriting the string is a complete fix.
 PERIOD_REMAP = {code: f"{ordinal}H" for code, ordinal in PERIOD_IDS.items()}
 
-#: Substituted for a missing lookahead event. Both lookups in _parse_shot compare
-#: against real Wyscout ids, so None matches neither and no goalkeeper qualifier
-#: is added -- correct, because there is no following save to describe. The shot's
-#: result comes from its own tags and is unaffected.
+#: Substituted for a missing lookahead event. None matches no real Wyscout id, so
+#: no goalkeeper qualifier is added; the shot's result comes from its own tags.
 _NO_NEXT_EVENT = {"eventId": None, "subEventId": None}
 
 
@@ -147,10 +117,8 @@ def drop_null_roster_entries(raw: dict) -> None:
 def deleted_hosts(dataset, raw: dict) -> dict[str, int]:
     """Events kloppy dropped, mapped to the tagged duel that displaced them.
 
-    Converting a tagged duel drops the event before it, on the assumption that
-    it is the other half of the duel pair. When it is not -- a pass, a shot, a
-    touch -- a real event is lost. Duels are excluded: dropping those is the
-    behaviour being aimed for, and is correct whenever the pair is adjacent.
+    Converting a tagged duel drops the preceding event, assuming it is the duel's
+    pair; when it is not, a real event is lost. Duels are excluded: correct drop.
     """
     present = {str(event.event_id) for event in dataset.records}
     events = raw["events"]
@@ -169,10 +137,8 @@ def deleted_hosts(dataset, raw: dict) -> dict[str, int]:
 def restore_deleted_hosts(dataset, raw: dict, *, data_version: str, patch_shot: bool) -> list[str]:
     """Put back the events dropped by ``events[:-1]``. Returns the ids restored.
 
-    Deserialises a second time with the offending duels' interception tag
-    removed. Without the tag those duels are not converted, nothing is dropped,
-    and the lost events survive to be copied across. Only they are taken, so
-    every other event stays exactly as the first load produced it.
+    Re-deserialises with the offending duels' interception tag removed so nothing
+    is dropped, then copies only the lost events; all others stay as first loaded.
     """
     lost = deleted_hosts(dataset, raw)
     if not lost:

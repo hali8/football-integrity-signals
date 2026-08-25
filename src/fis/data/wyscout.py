@@ -1,12 +1,9 @@
 """Fetch the koenvo Wyscout soccer match event dataset.
 
-Downloads a GitHub tarball over HTTPS rather than cloning: no git runtime
-dependency, no refs/history machinery, one request.
-
-The commit is pinned so an upstream revision cannot silently change results.
-To move to a newer revision, bump ``DATASET_COMMIT`` deliberately -- a changed
-pin is visible in the diff, and the stamp file makes existing checkouts
-re-download instead of quietly mixing revisions.
+Downloads a GitHub tarball over HTTPS (no git dependency). The commit is
+pinned so an upstream revision cannot silently change results; bump
+``DATASET_COMMIT`` deliberately, and the stamp file makes existing checkouts
+re-download rather than mix revisions.
 """
 
 from __future__ import annotations
@@ -91,10 +88,8 @@ def fetch(
 ) -> Path:
     """Ensure the dataset is present at ``dest`` and return that path.
 
-    Idempotent: an existing checkout stamped with the same commit is left alone.
-    The extraction is staged in a temp directory and swapped in with a rename, so
-    an interrupted run can never leave a half-populated directory that a later
-    run mistakes for complete.
+    Idempotent: a checkout stamped with the same commit is left alone. Extraction
+    is staged and renamed into place, so an interrupted run leaves nothing partial.
     """
     dest = Path(dest) if dest is not None else wyscout_dir()
 

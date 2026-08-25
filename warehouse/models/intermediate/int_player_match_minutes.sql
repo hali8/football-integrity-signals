@@ -1,25 +1,10 @@
 {#
   Minutes played per player-match, from lineups and substitutions.
-
-  Full time is taken from the events, not assumed: each period's last event
-  gives its real length, summed over periods 1-4. A nominal 90 clamped every
-  substitute brought on in stoppage time to zero minutes -- 411 of them -- when
-  the second half in fact averages 48.7 minutes and 790 matches reach the 94th.
-  Penalties (period 5) are excluded; a shootout is not minutes played.
-  A starter plays from 0 until the earliest of being substituted off, sent off,
-  or full time. A substitute plays from the minute they came on to the same.
-  An unused substitute has no row here at all -- absent rather than zero, so a
-  per-90 rate cannot silently divide by it.
-
-  50 players are named on the bench, never recorded as substituted on, and yet
-  have events -- up to 41 of them. They are not unused substitutes; the
-  substitution is missing from the source. For those, and only those, the window
-  comes from their own first and last event, and `minutes_are_inferred` says so.
-  It is a lower bound: a player is on the pitch before their first touch and
-  after their last, so the figure understates by an unknown amount.
-
-  Minutes are Wyscout's stated minute, not a stoppage-time-adjusted figure, so a
-  player subbed off in the 94th minute of a 90-minute match reads as 94.
+  Full time is each period's real length from the events, summed over periods
+  1-4; penalties are excluded. An unused substitute has no row -- absent, not
+  zero. Where a substitution is missing upstream, the window comes from the
+  player's own events and `minutes_are_inferred` marks it as a lower bound.
+  Minutes are Wyscout's stated minute, not stoppage-adjusted.
 #}
 
 with lineups as (select * from {{ ref('stg_match_lineups') }}),

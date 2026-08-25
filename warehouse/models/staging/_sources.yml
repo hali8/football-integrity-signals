@@ -1,15 +1,9 @@
 version: 2
 
 sources:
-  # Set FIS_DATA_DIR to point the warehouse elsewhere; fis.paths.data_dir() reads
-  # the same variable, so both move together.
-  #
-  # The 'data' fallback is not a second definition of where data lives. dbt can
-  # only run from the repository root -- DBT_PROJECT_DIR, DBT_PROFILES_DIR and the
-  # duckdb path in profiles.yml are all relative to the working directory -- and
-  # from there './data' *is* fis.paths.data_dir(), which resolves to
-  # <the directory holding pyproject.toml>/data. pixi always starts tasks in the
-  # manifest directory, so this holds however you invoke them.
+  # FIS_DATA_DIR moves the warehouse elsewhere; fis.paths.data_dir() reads the
+  # same variable. The './data' fallback resolves the same way because dbt
+  # always runs from the repository root -- see profiles.yml.
   - name: wyscout
     description: >
       Everything published by Wyscout for this dataset. The events arrive as

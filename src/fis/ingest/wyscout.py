@@ -29,10 +29,8 @@ INGEST_STAMP = ".fis-ingest.json"
 def provenance() -> dict[str, str]:
     """The three things that decide what a parquet file contains.
 
-    The input data, the parser, and our own code -- the last hashed from source,
-    because a fix to the workarounds changes the output as surely as a new
-    dataset commit does. Editing a comment re-ingests too; a spare half hour is
-    the cheaper mistake.
+    Input data, parser version, and our own code -- the last hashed from source,
+    since a workaround fix changes the output as surely as a new dataset commit.
     """
     sources = b"".join(
         Path(module.__file__).read_bytes() for module in (sys.modules[__name__], kloppy_workarounds)
@@ -63,9 +61,8 @@ def stale(out_dir: Path, current: dict[str, str]) -> list[str]:
 def _qualifiers(event) -> list[str]:
     """Every qualifier as "Type:VALUE".
 
-    to_df's flat columns keep only the last qualifier of each kind, so a cross
-    tagged "high" lands in pass_type as HIGH_PASS and the cross is lost. Keeping
-    the list means the flattening happens in SQL, where it can be chosen.
+    to_df's flat columns keep only the last qualifier of each kind; keeping the
+    full list defers the flattening to SQL, where it can be chosen.
     """
     out = []
     for q in getattr(event, "qualifiers", None) or []:
@@ -80,10 +77,8 @@ def _qualifiers(event) -> list[str]:
 def _raw_tags(json_path: Path) -> dict[str, list[int]]:
     """Wyscout tag ids per raw event id.
 
-    kloppy exposes only the counter-attack tag; everything else -- including
-    1801/1802 accurate/not accurate, which it discards outright for clearances --
-    is dropped. Carrying the ids means any tag-derived fact stays recoverable in
-    SQL, and tags2name.csv labels them.
+    kloppy drops every tag but counter-attack; carrying the ids keeps any
+    tag-derived fact recoverable in SQL (tags2name.csv labels them).
     """
     events = json.loads(json_path.read_text())["events"]
     return {str(e["id"]): [t["id"] for t in e["tags"]] for e in events}
@@ -176,9 +171,8 @@ def run(args: argparse.Namespace) -> int:
         except Exception as exc:  # deliberate: one bad match must not kill match 300 of 1,941
             failed.append((match_id, repr(exc)))
 
-    # Stamped only when the whole dataset is present and sound. A partial run
-    # leaves no claim behind, so the next one starts over rather than mixing
-    # output from two pipelines.
+    # Stamped only when the whole dataset is present and sound; a partial run
+    # leaves no claim behind, so the next one cannot mix two pipelines' output.
     if not failed and args.limit is None:
         (out_dir / INGEST_STAMP).write_text(json.dumps(current, indent=2) + "\n")
 

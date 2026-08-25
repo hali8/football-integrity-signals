@@ -1,12 +1,7 @@
-# Every path dbt reads here is relative to the WORKING DIRECTORY, not to this
-# file: the duckdb path below, DBT_PROJECT_DIR/DBT_PROFILES_DIR in pixi.toml, and
-# the data locations in models/staging/_sources.yml. That is deliberate. Because
-# they are all relative together, a wrong working directory fails on this file
-# before dbt ever reads a source -- they cannot silently disagree.
-#
-# Do not "tidy" this into an absolute path. Doing so lets dbt start from any
-# directory, at which point _sources.yml resolves './data' against that directory
-# instead of the repository root and reads whatever happens to be there.
+# Every path here is relative to the working directory, deliberately: it stays
+# in step with DBT_PROJECT_DIR/DBT_PROFILES_DIR and _sources.yml's paths. Do
+# not make this absolute -- it would let dbt start from any directory and
+# _sources.yml would then resolve './data' against the wrong place.
 integrity:
   target: dev
   outputs:

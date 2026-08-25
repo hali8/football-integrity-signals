@@ -1,22 +1,13 @@
 {#
   One row per (staging model, column): row count, non-null count, distinct
-  count, and how many values still carry a literal \uXXXX escape.
-
-  Built from dbt's graph, so it cannot fall behind the schema. Finds missing
-  *values*; see relationship_profile for missing *rows*.
-
-  approx_count_distinct: exact counts over 3.3M rows x 81 columns are not worth
-  the wait for a number used to spot "constant" or "nearly unique".
+  count, and how many values still carry a literal \uXXXX escape. Built from
+  dbt's graph. Finds missing *values*; see relationship_profile for rows.
+  approx_count_distinct: exact counts over 3.3M rows are not worth the wait.
 #}
 
 {#
-  Ordering. The macros below discover models from dbt's graph at run time, which
-  needs {% if execute %} -- and refs inside that guard are invisible at parse
-  time, when dbt collects dependencies. So the edges are declared here instead.
-
-  Only the ORDER is hand-listed; discovery stays generated, so a model missing
-  from this list still appears in the profile, it just is not guaranteed to be
-  built first. Add new staging models here.
+  Ordering is hand-listed because {% if execute %}-guarded refs are invisible
+  to dbt at parse time. Discovery stays generated; add new staging models here.
 #}
 -- depends_on: {{ ref('stg_coaches') }}
 -- depends_on: {{ ref('stg_competitions') }}

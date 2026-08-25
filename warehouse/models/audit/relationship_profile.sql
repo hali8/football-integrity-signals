@@ -1,24 +1,13 @@
 {#
   For every declared foreign key, how many child rows each parent row has.
-
-  Finds missing *rows*, which column_profile structurally cannot: a match with
-  no officials has no row to be null, but it is still a parent with a zero
-  beside it. Needs no domain knowledge -- outliers show against the bulk
-  whatever the bulk is. This is what surfaces the 16 refereeless matches.
+  Finds missing *rows* (a parent with zero children), which column_profile
+  cannot -- see column_profile for missing *values*.
 #}
 
 {#
-  Ordering. The macros below discover models from dbt's graph at run time, which
-  needs {% if execute %} -- and refs inside that guard are invisible at parse
-  time, when dbt collects dependencies. So the edges are declared here instead.
-
-  Only the ORDER is hand-listed; discovery stays generated, so a model missing
-  from this list still appears in the profile, it just is not guaranteed to be
-  built first -- until the scheduler happens to put it after this one, and the
-  build fails on a relation that does not exist yet. Which is what happened: the
-  four models below the staging block declare relationships and were profiled
-  for weeks without being listed. Add EVERY model that declares one, at any
-  layer, not just staging.
+  Ordering is hand-listed because {% if execute %}-guarded refs are invisible
+  to dbt at parse time. Discovery stays generated; add every model that
+  declares a relationship, at any layer, or it may build before its parent.
 #}
 -- depends_on: {{ ref('stg_coaches') }}
 -- depends_on: {{ ref('stg_competitions') }}
