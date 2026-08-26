@@ -227,6 +227,7 @@ __marimo__/
 data/download/
 data/parquet/
 data/json/
+data/reports/
 data/**/*.parquet
 .fis-wyscout-*/
 .fis-figshare-*/

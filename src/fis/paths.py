@@ -109,6 +109,12 @@ def parquet_dir() -> Path:
     return data_dir() / "parquet"
 
 
+def report_dir() -> Path:
+    """Generated reports. Unguarded: analysis WRITING its own output is the one
+    file access it legitimately owns."""
+    return data_dir() / "reports"
+
+
 def wyscout_dir() -> Path:
     """Root of the extracted koenvo Wyscout dataset."""
     _guard("wyscout_dir", "raw upstream JSON")
