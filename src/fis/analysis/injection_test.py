@@ -7,10 +7,12 @@ metric (player sd, or the position pool's where his cannot be computed); the
 per-90 mechanisms convert through the row's exposure. ``k = 0`` must change
 nothing (:func:`run` asserts it); achieved severity is reported vs requested.
 
-Mechanisms can be COMPOSED: several applied to the same match at ``k/sqrt(n)``
-each, in a fixed causal order, each seeing the row as the previous ones left
-it. A single mechanism through :func:`compose` is bit-identical to calling it
-directly.
+Mechanisms can be COMPOSED: several applied to the same match in a fixed causal
+order, each seeing the row as the previous ones left it. The requested ``k`` is
+allocated across them in QUADRATURE, channels short of substrate pinned at
+their ceiling and the remainder re-split, so the total displacement honours the
+label rather than under-delivering. A single mechanism through
+:func:`compose` is bit-identical to calling it directly.
 """
 
 from __future__ import annotations
@@ -27,8 +29,9 @@ import pandas as pd
 
 from fis.analysis import baseline, heldout
 
-#: k = 0 is the null check.
-SEVERITIES = (0.0, 1.0, 2.0, 3.0)
+#: k = 0 is the null check. 1.5 rather than 2.0 is the ruled ladder: k feeds
+#: the rng key, so runs on different ladders share no draws and cannot pool.
+SEVERITIES = (0.0, 1.0, 1.5, 3.0)
 
 SEED = 20260823
 
@@ -74,10 +77,16 @@ def _relabel(
         return {}
     moved = stochastic_round(k * sd * denom, rng)
     new = int(min(max(successes - moved, 0), denom))
-    return {
+    out = {
         success_col: new,
         metric: round_half_up(100.0 * new / denom, RATE_DECIMALS),
     }
+    # Running out of successes to relabel truncates the dose. This is the clamp
+    # that actually binds -- defensive_success delivers about a third of what is
+    # asked at k=3 -- so it is the one the report must count.
+    if successes - moved < 0 or successes - moved > denom:
+        out[CLIPPED] = True
+    return out
 
 
 def defensive_success(row, sds, k, rng):
@@ -128,15 +137,35 @@ def _x_means(row: pd.Series) -> tuple[float, float, float, float]:
     return total_x, n_pos, np.clip(mean_third, 0.0, 1.0), np.clip(mean_out, 0.0, 1.0)
 
 
+#: Marks an update whose dose was truncated for want of substrate. Stripped in
+#: compose(), so it never reaches the frame as a column.
+CLIPPED = "_clipped"
+
+
+def clip_unit(value: float, out: dict) -> float:
+    """Clamp a reconstructed mean to [0, 1], recording whether it bound.
+
+    A bound clamp means the row received LESS than the requested dose, so the
+    achieved figure understates by an unmeasured amount. Silently discarding
+    that reads as a detector miss when it is a delivery shortfall.
+    """
+    clipped = float(np.clip(value, 0.0, 1.0))
+    if not np.isclose(clipped, value, equal_nan=True):
+        out[CLIPPED] = True
+    return clipped
+
+
 def remove_defensive(row, sds, k, rng):
     sd = sds["defensive_actions"]
     total = int(row["defensive_actions"])
     if total <= 0 or not np.isfinite(sd) or sd <= 0:
         return {}
     exposure = _exposure(row)
-    n = min(stochastic_round(k * sd, rng), total)
+    wanted = stochastic_round(k * sd, rng)
+    n = min(wanted, total)
     if n == 0:
         return {}
+    truncated = wanted > total
 
     with_outcome = int(row["defensive_actions_with_outcome"])
     successful = int(row["defensive_actions_successful"])
@@ -163,6 +192,8 @@ def remove_defensive(row, sds, k, rng):
     touches = float(row["touches_in_defensive_third"])
     out["touches_in_defensive_third"] = touches - gone_third
     out["touches_in_defensive_third_per_90"] = (touches - gone_third) * 90.0 / exposure
+    if truncated:
+        out[CLIPPED] = True
 
     # Deleted actions carry the group-mean x of the region they left; the
     # exact composition is unknowable at mart level.
@@ -180,7 +211,7 @@ def remove_defensive(row, sds, k, rng):
         # Clamped like the region means: the reconstruction carries the mart's
         # 4dp rounding residual.
         out["mean_action_x"] = round_half_up(
-            float(np.clip((total_x - removed_x) / (n_pos - n), 0.0, 1.0)), MEAN_X_DECIMALS
+            clip_unit((total_x - removed_x) / (n_pos - n), out), MEAN_X_DECIMALS
         )
         out["attempts_with_position"] = n_pos - n
     return out
@@ -192,7 +223,8 @@ def relocate_upfield(row, sds, k, rng):
     if touches <= 0 or not np.isfinite(sd) or sd <= 0:
         return {}
     exposure = _exposure(row)
-    n = min(stochastic_round(k * sd, rng), touches)
+    wanted = stochastic_round(k * sd, rng)
+    n = min(wanted, touches)
     if n == 0:
         return {}
 
@@ -209,10 +241,12 @@ def relocate_upfield(row, sds, k, rng):
         - _hypergeom(int(row["defensive_actions_in_defensive_third"]), touches, n, rng),
         "sum_start_x_in_defensive_third": (touches - n) * x_from,
     }
+    if wanted > touches:
+        out[CLIPPED] = True
     if n_pos > 0:
         # Same clamp as remove_defensive's write.
         out["mean_action_x"] = round_half_up(
-            float(np.clip((total_x + n * (x_dest - x_from)) / n_pos, 0.0, 1.0)),
+            clip_unit((total_x + n * (x_dest - x_from)) / n_pos, out),
             MEAN_X_DECIMALS,
         )
     return out
@@ -245,7 +279,7 @@ MECHANISMS = {
 
 #: Severity ladder per mechanism. throttle_defensive is a fraction of successes
 #: lost, not a sigma count; achieved is reported in count sd either way.
-LADDERS = {"throttle_defensive": (0.0, 0.10, 0.25, 0.50)}
+LADDERS = {"throttle_defensive": (0.0, 0.20, 0.50)}
 
 #: Application order under composition, and the set that CAN compose: removal
 #: first so relabellings are sized against surviving denominators, relocation
@@ -263,9 +297,77 @@ COMPOSITION_ORDER = (
 #: against. Decides only how hard a player is hit, never whether he is scored.
 MIN_SPREAD_ROWS = 4
 
+
 #: The single count each mechanism moves directly and calibrates its severity
 #: against -- one degree of freedom each, so "k sigma" stays well defined; the
 #: other columns follow from that one draw.
+def _count_capacity(row: pd.Series, sd: float, column: str) -> float:
+    """Largest k a count-removal mechanism can deliver: it cannot remove more
+    events than exist, so the ceiling is the count itself in sigma units."""
+    if not np.isfinite(sd) or sd <= 0:
+        return 0.0
+    return max(float(row[column]), 0.0) / sd
+
+
+def _relabel_capacity(row: pd.Series, sd: float, success_col: str, denom_col: str) -> float:
+    """Largest k a relabelling can deliver: it floors at zero successes, and
+    moves ``k * sd * denominator`` of them, so the ceiling is the successes
+    divided by that product."""
+    denom = float(row[denom_col])
+    if denom <= 0 or not np.isfinite(sd) or sd <= 0:
+        return 0.0
+    return max(float(row[success_col]), 0.0) / (sd * denom)
+
+
+#: Per-mechanism ceiling in sigma, mirroring the clamp inside each mechanism.
+#: Lets a composed budget be allocated across channels of unequal headroom.
+CAPACITIES = {
+    "remove_defensive": lambda row, sds: _count_capacity(
+        row, sds["defensive_actions"], "defensive_actions"
+    ),
+    "relocate_upfield": lambda row, sds: _count_capacity(
+        row, sds["touches_in_defensive_third"], "touches_in_defensive_third"
+    ),
+    "defensive_success": lambda row, sds: _relabel_capacity(
+        row,
+        sds["defensive_success"],
+        "defensive_actions_successful",
+        "defensive_actions_with_outcome",
+    ),
+    "pass_completion": lambda row, sds: _relabel_capacity(
+        row,
+        sds["pass_completion"],
+        "passes_completed",
+        "passes_with_outcome",
+    ),
+}
+
+
+def allocate(budget: float, caps: list[float]) -> list[float]:
+    """Split ``budget`` sigma across channels in QUADRATURE, respecting caps.
+
+    Water-filling: share equally, pin any channel that cannot take its share at
+    its ceiling, re-split what is left across the rest. Preserves the total --
+    sum(k_i**2) == budget**2 -- unless every channel is capped, which is a row
+    that cannot reach the requested sigma at any allocation.
+    """
+    out = [0.0] * len(caps)
+    free = [i for i, c in enumerate(caps) if c > 0]
+    left = budget**2
+    while free:
+        share = math.sqrt(left / len(free))
+        over = [i for i in free if caps[i] < share]
+        if not over:
+            for i in free:
+                out[i] = share
+            return out
+        for i in over:
+            out[i] = caps[i]
+            left -= caps[i] ** 2
+            free.remove(i)
+    return out
+
+
 CONTROLS = {
     "throttle_defensive": "defensive_actions_successful",
     "defensive_success": "defensive_actions_successful",
@@ -300,14 +402,24 @@ def compose(
     names: tuple[str, ...],
     rng_for,
 ) -> tuple[dict[str, float], dict[str, dict]]:
-    """Apply ``names`` jointly, each at ``k / sqrt(n)`` of its own sigma.
+    """Apply ``names`` jointly, splitting ``k`` across them IN QUADRATURE.
+
+    The claim on a composed row is a k-sigma deviation, so the budget is
+    allocated to honour it: channels that cannot take an equal share are pinned
+    at their ceiling and the remainder is re-split across those with headroom,
+    preserving sum(k_i**2) == k**2. An equal k/sqrt(n) split would silently
+    under-deliver whenever any channel is short of substrate.
+
+    That makes the composed manipulation more CONCENTRATED when a channel is
+    thin -- the same total displacement through fewer directions -- which is a
+    property of the mechanism rather than of the result.
 
     Mechanisms run in :data:`COMPOSITION_ORDER`, each seeing the row as the
     previous ones left it, so a relabelling is sized by its THINNED
-    denominator. ``rng_for(name, scaled_k)`` supplies each mechanism's stream,
-    keyed so a single mechanism through here draws exactly what it draws
-    directly. Returns the merged updates against the ORIGINAL row and one
-    record per mechanism for per-DOF achieved reporting.
+    denominator, and capacities are recomputed at each step for the same
+    reason. ``rng_for(name, scaled_k)`` supplies each mechanism's stream.
+    Returns the merged updates against the ORIGINAL row and one record per
+    mechanism for per-DOF achieved reporting.
     """
     if len(names) == 1:
         # k / sqrt(1) is k bit-exactly; no sigma axis needed, none assumed.
@@ -320,19 +432,35 @@ def compose(
                 "so k/sqrt(n) has no meaning"
             )
         ordered = [n for n in COMPOSITION_ORDER if n in names]
-    scaled = k / math.sqrt(len(ordered))
     working = row.copy()
     merged: dict[str, float] = {}
     steps: dict[str, dict] = {}
-    for name in ordered:
+    budget = k**2
+    for position, name in enumerate(ordered):
+        if len(ordered) == 1:
+            # k / sqrt(1) is k bit-exactly, and a single channel has nowhere to
+            # redistribute to -- its clamp is the whole story.
+            scaled = k
+        else:
+            # Re-plan each step against the row as the earlier channels left
+            # it: removal succeeding is precisely what collapses a later
+            # relabelling's capacity, so the horizon cannot be costed up front.
+            horizon = ordered[position:]
+            caps = [CAPACITIES[n](working, sds) for n in horizon]
+            scaled = allocate(math.sqrt(max(budget, 0.0)), caps)[0]
+            budget -= scaled**2
         control = CONTROLS[name]
         before = float(working[control])
         denominator = float(working[RATE_CONTROLS[name][1]]) if name in RATE_CONTROLS else np.nan
         updates = MECHANISMS[name](working, sds, scaled, rng_for(name, scaled))
+        # Strip the clamp marker before it can be written as a column.
+        was_clipped = bool(updates.pop(CLIPPED, False))
         for column, value in updates.items():
             working[column] = value
         merged.update(updates)
         steps[name] = {
+            "clipped": was_clipped,
+            "allocated": scaled,
             "control": control,
             "before": before,
             "after": float(updates[control]) if control in updates else before,
@@ -399,6 +527,10 @@ def position_spreads(scored: pd.DataFrame) -> dict[str, dict[str, float]]:
     return out
 
 
+#: Scorers needing a per-row forest fit. Kept out of SCORERS so the
+#: default run costs no fits; run(forest=True) opts them in.
+FOREST_SCORERS = ("forest", "forest_norm", "forest_res", "forest_res_norm")
+
 #: Scorers compared, each picking its own target row -- raw and residual
 #: space disagree about which match is a player's most typical.
 SCORERS = ("max", "mahalanobis", "mahalanobis_z")
@@ -417,6 +549,25 @@ def select_targets(
     tested on him -- shipped rule's target, NaN score, counted as a miss -- so
     narrow coverage is paid for rather than flattered.
     """
+    default, choices = target_choices(scored, census, scorers)
+    targets = set()
+    for scorer in scorers:
+        chosen = choices[scorer]
+        for player, match in default.items():
+            targets.add((player, chosen.get(player, match), scorer))
+    return targets
+
+
+def target_choices(
+    scored: pd.DataFrame, census: pd.DataFrame, scorers: tuple[str, ...] = SCORERS
+) -> tuple[dict, dict[str, dict]]:
+    """The shipped rule's pick per player, and each scorer's OWN pick.
+
+    Kept separate from :func:`select_targets` because the agreement matrix must
+    be able to tell a scorer's own choice from the fallback it inherits when it
+    cannot score a player. Counting a fallback as agreement would make a thin
+    scorer look most aligned with the shipped rule exactly where it is blind.
+    """
     keys = ["player_id", "match_id"]
     clean_scores = census.merge(scored[keys + ["max_abs_z"]], on=keys, how="left").rename(
         columns={"max_abs_z": "max"}
@@ -430,12 +581,7 @@ def select_targets(
         return dict(zip(pick["player_id"], pick["match_id"]))
 
     default = median_row(clean_scores, "max")
-    targets = set()
-    for scorer in scorers:
-        chosen = median_row(clean_scores, scorer)
-        for player, match in default.items():
-            targets.add((player, chosen.get(player, match), scorer))
-    return targets
+    return default, {s: median_row(clean_scores, s) for s in scorers}
 
 
 def run(
@@ -446,23 +592,55 @@ def run(
     mechanisms: dict | None = None,
     compositions: dict[str, tuple[str, ...]] | None = None,
     metrics: list[str] | None = None,
-    limit_players: int | None = None,
     seed: int = SEED,
     jobs: int = 1,
+    forest: bool = False,
+    design: str = "persistent",
 ) -> pd.DataFrame:
     """One match per player perturbed by every mechanism at every severity.
 
-    A manipulator fixes a match, not a career, so exactly one row per player is
-    injected. Each scorer picks its own target -- the match nearest that
-    player's median score under that scorer. The perturbed row is always the
-    held-out one; ``census`` supplies the clean scores targets are chosen from.
+        A manipulator fixes a match, not a career, so exactly one row per player is
+        injected. Each scorer picks its own target -- the match nearest that
+        player's median score under that scorer. The perturbed row is always the
+        held-out one; ``census`` supplies the clean scores targets are chosen from.
 
-    ``compositions`` maps a name to mechanism names injected JOINTLY at
-    ``k/sqrt(n)`` each; those rows carry per-DOF achieved columns. ``metrics``
-    narrows the multivariate scorers' feature set (the census must have been
-    scored under the same set); injection sizing always uses the shipped set,
-    so the perturbation is identical across feature-set arms.
+        ``compositions`` maps a name to mechanism names injected JOINTLY, with
+        ``k`` allocated across them in quadrature against each channel's capacity;
+        those rows carry per-DOF achieved columns. ``metrics``
+        narrows the multivariate scorers' feature set (the census must have been
+        scored under the same set); injection sizing always uses the shipped set,
+        so the perturbation is identical across feature-set arms.
+
+    ``design`` selects the experiment, and the two answer different questions:
+
+        ``persistent``
+            The fixed match stays in the player's history, so every OTHER row of
+            his is rescored against a baseline that now contains it. That is what
+            makes collateral measurable, and it costs a fit per row per frame.
+        ``heldout``
+            Only each scorer's own targets are scored, against criteria fixed on
+            the clean census -- as if the fixed match were a new event arriving
+            after the detector was built. No collateral by construction, and cheap
+            enough to afford forests.
+
+        Target scores are IDENTICAL under both: a target's leave-one-out fit
+        excludes the target and the position pools are pinned to the clean frame,
+        so an injection cannot move its own score. The designs differ only in
+        whether the rest of the player's history is rescored.
     """
+    if design not in ("persistent", "heldout"):
+        raise ValueError(f"design must be persistent or heldout; got {design!r}")
+    absent = [
+        s for s in SCORERS + (FOREST_SCORERS if forest else ()) if s != "max" and s not in census
+    ]
+    if absent:
+        # Checked before any fitting, so a stale cache costs nothing to find.
+        # A bare KeyError from select_targets' dropna would name the column
+        # but not the remedy.
+        raise KeyError(
+            f"census lacks {absent}; rebuild it with score_all(..., forest=True) "
+            "-- a census cached before a rename or without forests is stale"
+        )
     warnings.filterwarnings("ignore")
     mechanisms = MECHANISMS if mechanisms is None else mechanisms
     compositions = compositions or {}
@@ -474,7 +652,7 @@ def run(
     zcols = heldout.residual_columns(metrics)
     floor = len(metrics) + 2
     position_fits, position_z, position_rows = {}, {}, {}
-    position_nu, position_nu_z = {}, {}
+    position_nu, position_nu_z, position_z_rows = {}, {}, {}
     for position in heldout.POSITIONS:
         pool = scored[scored["position_code"] == position].dropna(subset=metrics)
         if len(pool) < floor:
@@ -485,26 +663,37 @@ def run(
         position_nu[position] = heldout.covariance_nu(position_rows[position], ids)
         frame_z = pool[zcols + ["player_id"]].dropna()
         pz = frame_z[zcols].to_numpy(dtype=float)
+        position_z_rows[position] = pz
         position_z[position] = heldout._Fit(pz) if len(pz) >= floor else None
         position_nu_z[position] = heldout.covariance_nu(pz, frame_z["player_id"].to_numpy())
 
     keys = ["player_id", "match_id"]
-    targets = select_targets(scored, census)
+    scorers = SCORERS + (FOREST_SCORERS if forest else ())
+    targets = select_targets(scored, census, scorers=scorers)
+    target_rows = {(p, m) for p, m, _ in targets}
 
-    def score_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    def score_frame(frame: pd.DataFrame, wanted: set | None = None) -> pd.DataFrame:
         """Every row scored through the shipped residual path, position
         reference pinned to the clean frame. The player's own history is left
         contaminated on purpose -- that is what the collateral columns measure.
+
+        ``wanted`` restricts scoring to those (player, match) rows. Under the
+        heldout design it is the scorer's OWN targets, so no fit is built for
+        a row nobody reads -- and, more importantly, a row belonging to some
+        other scorer's target set cannot leak into this scorer's collateral,
+        where it would be a near-median subset masquerading as the population.
         """
         rescored, _ = baseline.residuals(baseline.prepare(frame), fitted=fitted)
         rescored = rescored[rescored["is_scoreable"]]
         flagged = baseline.flag(rescored, baseline.DEFAULT_FLAG_RATE)
-        out = []
-        for _, g in flagged.groupby("player_id"):
+
+        def one_player(g: pd.DataFrame) -> list[dict]:
+            out = []
             position = g["position_code"].iloc[0]
             if position not in position_fits:
-                continue
+                return out
             pool_fit, pool_z = position_fits[position], position_z.get(position)
+            player_id = g["player_id"].iloc[0]
             complete = g.dropna(subset=metrics)
             cx = complete[metrics].to_numpy(dtype=float)
             cz = complete[zcols].to_numpy(dtype=float)
@@ -516,6 +705,8 @@ def run(
                 g["max_abs_z"].to_numpy(),
                 g["sd_from_mean"].to_numpy(),
             ):
+                if wanted is not None and (player_id, mid) not in wanted:
+                    continue
                 keep = cids != mid
                 fit = pool_fit
                 if keep.sum() >= 2:
@@ -526,10 +717,12 @@ def run(
                             int(keep.sum()), position_nu.get(position, np.inf)
                         ),
                         pool=position_rows.get(position),
+                        seed=heldout.borrow_seed(player_id),
                     )
                 ztrain = cz[keep]
                 ztrain = ztrain[~np.isnan(ztrain).any(axis=1)]
                 zdist = np.nan
+                fres = fres_norm = np.nan
                 if len(ztrain) >= 2:
                     zfit = heldout._Fit(
                         ztrain,
@@ -537,10 +730,14 @@ def run(
                         weight=heldout.shrinkage_weight(
                             len(ztrain), position_nu_z.get(position, np.inf)
                         ),
+                        pool=position_z_rows.get(position) if forest else None,
+                        seed=heldout.borrow_seed(player_id),
                     )
                     zdist = zfit.distance(zrow)
+                    if forest:
+                        _, fres, fres_norm = zfit.score(zrow)
                 record = {
-                    "player_id": g["player_id"].iloc[0],
+                    "player_id": player_id,
                     "match_id": mid,
                     "position_code": position,
                     "max": top,
@@ -548,9 +745,28 @@ def run(
                     "mahalanobis": fit.distance(x),
                     "mahalanobis_z": zdist,
                 }
+                if forest:
+                    _, fraw, fnorm = fit.score(x)
+                    record["forest"] = fraw
+                    record["forest_norm"] = fnorm
+                    record["forest_res"] = fres
+                    record["forest_res_norm"] = fres_norm
                 record.update(dict(zip(zcols, zrow)))
                 out.append(record)
-        return pd.DataFrame(out)
+            return out
+
+        # Same shape as heldout.score_all's loop, and parallelised the same
+        # way: each player is independent, the closed-over fits are read-only,
+        # and joblib returns batches in order so the frame is draw-for-draw
+        # identical to the serial path.
+        histories = [g for _, g in flagged.groupby("player_id")]
+        if jobs and jobs != 1:
+            from joblib import Parallel, delayed
+
+            batches = Parallel(n_jobs=jobs)(delayed(one_player)(g) for g in histories)
+        else:
+            batches = [one_player(g) for g in histories]
+        return pd.DataFrame([r for batch in batches for r in batch])
 
     # Every player's spread, computed once from clean data -- always over the
     # SHIPPED metric set, so the injection does not change with ``metrics``.
@@ -559,14 +775,17 @@ def run(
         for pid, g in scored.groupby("player_id")
     }
     by_key = raw.set_index(keys)
-    clean = score_frame(raw).set_index(keys)
+    # Heldout scores only targets, so the clean pass needs the union across
+    # scorers (each scorer reads its own targets' clean values from it).
+    clean = score_frame(raw, wanted=target_rows if design == "heldout" else None)
+    clean = clean.set_index(keys)
 
     # Singles are one-mechanism recipes through the same compose() path.
     recipes = [(name, (name,)) for name in mechanisms]
     recipes += [(name, tuple(parts)) for name, parts in compositions.items()]
 
     rows = []
-    for scorer in SCORERS:
+    for scorer in scorers:
         chosen = {p: m for p, m, sc in targets if sc == scorer}
         for name, parts in recipes:
             composed = len(parts) > 1
@@ -576,6 +795,8 @@ def run(
                 # Every target is fixed at once, then the WHOLE frame is
                 # re-scored, so the position-level knock-on is included.
                 patch, achieved, details, noop = {}, {}, {}, set()
+                clamped: dict = {}
+                allocated: dict = {}
                 for player_id, match_id in chosen.items():
                     if (player_id, match_id) not in by_key.index:
                         continue
@@ -613,18 +834,39 @@ def run(
                     patch[(player_id, match_id)] = updates
                     per = {p: step_achieved(p, steps[p], spreads.get(player_id, {})) for p in parts}
                     details[player_id] = per
+                    # Per DOF as well as per row: delivery is already reported
+                    # per DOF, so collapsing truncation to one boolean leaves a
+                    # reader unable to attribute the shortfall.
+                    clamped[player_id] = {p: bool(steps[p].get("clipped")) for p in parts}
+                    # Did the allocation reach the k this row is labelled with?
+                    # It cannot when every channel is at its ceiling, which is a
+                    # property of the player, not a failure to hide.
+                    allocated[player_id] = math.sqrt(
+                        sum(float(steps[p].get("allocated", 0.0)) ** 2 for p in parts)
+                    )
                     # A composed row has no single sigma unit; its scalar is
                     # NaN and the per-DOF achieved_* columns carry the shift.
                     achieved[player_id] = per[name] if not composed else np.nan
-                if k == 0 or not patch:
+                mine = {(p, m) for p, m in chosen.items()}
+                if k == 0:
+                    # The null row costs no scoring pass: nothing was injected,
+                    # so `after` IS `clean`. Every rate and AUC needs it as a
+                    # baseline, and the masked gate's no-skill floor is 0.483
+                    # rather than 0.5, so it cannot be assumed.
+                    # Restricted to the same rows a dosed block scores, or k=0
+                    # would carry other scorers' targets and print a collateral
+                    # figure the dosed rows never measure.
+                    after = clean[clean.index.isin(mine)] if design == "heldout" else clean
+                elif not patch:
                     continue
-
-                fixed = raw.copy()
-                for (player_id, match_id), updates in patch.items():
-                    mask = (fixed["player_id"] == player_id) & (fixed["match_id"] == match_id)
-                    for column, value in updates.items():
-                        fixed.loc[mask, column] = value
-                after = score_frame(fixed).set_index(keys)
+                else:
+                    fixed = raw.copy()
+                    for (player_id, match_id), updates in patch.items():
+                        mask = (fixed["player_id"] == player_id) & (fixed["match_id"] == match_id)
+                        for column, value in updates.items():
+                            fixed.loc[mask, column] = value
+                    after = score_frame(fixed, wanted=mine if design == "heldout" else None)
+                    after = after.set_index(keys)
 
                 shared = clean.index.intersection(after.index)
                 for key in shared:
@@ -642,6 +884,12 @@ def run(
                         "severity": k,
                         "is_target": is_target,
                         "bit": bit,
+                        "clipped": any(clamped.get(player_id, {}).values()),
+                        # Short of the label's k: no allocation could reach it.
+                        "short": bool(
+                            k > 0 and player_id in allocated and allocated[player_id] < k - 1e-9
+                        ),
+                        "allocated": allocated.get(player_id, np.nan),
                         "achieved": achieved[player_id],
                         "achieved_z": (
                             after.at[key, zobs] - clean.at[key, zobs]
@@ -657,6 +905,7 @@ def run(
                         for p in parts:
                             p_obs = f"z_{OBSERVABLES[p]}"
                             record[f"achieved_{p}"] = details[player_id][p]
+                            record[f"clipped_{p}"] = bool(clamped.get(player_id, {}).get(p, False))
                             record[f"achieved_z_{p}"] = (
                                 after.at[key, p_obs] - clean.at[key, p_obs]
                                 if is_target and p_obs in after.columns
@@ -664,6 +913,247 @@ def run(
                             )
                     rows.append(record)
     return pd.DataFrame(rows)
+
+
+def _auc(reference: np.ndarray, hot: np.ndarray) -> float:
+    """P(a perturbed row outranks a random clean one), ties counted half.
+
+    Threshold-free, so it separates "cannot see the perturbation" from "sees
+    it but the bar is too far out to act on it" -- the distinction that once
+    stopped this project reading a noisy detection delta as a gain.
+
+    -inf is a REAL value here (a gated score whose gate did not fire), so only
+    NaN is dropped from the reference. A NaN score cannot be flagged, matching
+    flag(), so in the perturbed set it sinks to the bottom rather than being
+    discarded, which would flatter the scorer by shrinking its denominator.
+    """
+    clean = np.sort(reference[~np.isnan(reference)])
+    perturbed = np.where(np.isnan(hot), -np.inf, hot)
+    if not len(clean) or not len(perturbed):
+        return float("nan")
+    lo = np.searchsorted(clean, perturbed, side="left")
+    hi = np.searchsorted(clean, perturbed, side="right")
+    return float(np.mean((lo + hi) / (2 * len(clean))))
+
+
+def gated_score(z: np.ndarray, sigma: np.ndarray, sigma_gate: float) -> np.ndarray:
+    """max|z| masked by the corroboration gate: the shipped rule as a ranking.
+
+    Thresholding this reproduces flag() exactly at any bar, and it carries no
+    bar itself, so ONE ranking serves every workload. Its no-skill floor is
+    NOT 0.5: median-selected targets fire the gate far less often than a
+    random clean row (1.5% against 4.9% here), so it must be read against a
+    clean-target baseline, never against the conventional line.
+    """
+    return np.where(np.abs(sigma) >= sigma_gate, z, -np.inf)
+
+
+def _recovery_se(rate: float, n: int, structural: bool) -> float:
+    """Standard error on a recovery rate, Agresti-Coull off zero.
+
+    The textbook sqrt(p(1-p)/n) collapses to EXACTLY zero when nothing was
+    recovered, which prints as "measured to be zero" when it means "no events
+    seen, the rate could be up to about 3/n". Where the zero is structural --
+    k=0, where after IS clean -- it really is exact, and stays so.
+    """
+    if not n or not np.isfinite(rate):
+        return np.nan
+    if structural:
+        return 0.0
+    adjusted = (rate * n + 2.0) / (n + 4.0)
+    return float(np.sqrt(adjusted * (1.0 - adjusted) / (n + 4.0)))
+
+
+def tallies_for(present: set, bars: dict[str, float]) -> list[tuple[str, str, bool]]:
+    """The report's unique rules: every scorer, plus max|z| WITHOUT the gate.
+
+    The ungated tally is a second reading of rows already scored, never a
+    separate scorer -- it would select identical targets and cost a full extra
+    scoring pass for duplicate numbers.
+    """
+    out = [(s, s, True) for s in SCORERS + FOREST_SCORERS if s in present]
+    if "max" in present and np.isfinite(bars.get("max_ungated", np.nan)):
+        out.insert(1, ("max_ungated", "max", False))
+    return out
+
+
+def cell_statistics(
+    results: pd.DataFrame,
+    bars: dict[str, float],
+    sigma_gate: float = baseline.CORROBORATING_SIGMA,
+    reference: dict[str, np.ndarray] | None = None,
+) -> pd.DataFrame:
+    """One row per (mechanism, severity, tally) -- every number a table needs.
+
+    Computed once so the text summary and the report tables cannot drift.
+    Two faithful renderings of one wrong number agree with each other, which
+    is exactly how the jackknife estimator survived as long as it did.
+    """
+    present = set(results["scorer"].unique())
+    rows = []
+    for name in results["mechanism"].unique():
+        for k in sorted(results.loc[results.mechanism == name, "severity"].unique()):
+            block = results[(results.mechanism == name) & (results.severity == k)]
+            for tally, scorer, gated in tallies_for(present, bars):
+                r = block[block.scorer == scorer]
+                if r.empty:
+                    continue
+                cut = bars[tally]
+                hit, was = r["after"] >= cut, r["clean"] >= cut
+                if scorer == "max" and gated:
+                    hit = hit & (r["sigma_after"].abs() >= sigma_gate)
+                    was = was & (r["sigma_clean"].abs() >= sigma_gate)
+                t, o = r.is_target, ~r.is_target
+                n = int(t.sum())
+                # Recovery is crossing the bar BECAUSE OF the injection. A row
+                # already above it when clean was recovered by nothing, and
+                # counting it inflates every scorer equally.
+                gained = float((~was & hit)[t].mean()) if n else np.nan
+                # Second denominator: rows the injection actually CHANGED. The
+                # numerator is identical -- a row where nothing moved has
+                # after == clean, so it cannot cross the bar -- so the two rates
+                # differ only by how many un-moved rows share the credit.
+                # Row-level, so it means "any channel fired" -- true on nearly
+                # every COMPOSED row even when a channel is dead on three
+                # quarters of them. There the concept is per-channel, not
+                # per-row, so the column says n/a and the per-DOF acted shares
+                # carry it instead.
+                composed_block = any(
+                    c.startswith("achieved_")
+                    and c != "achieved_z"
+                    and not c.startswith("achieved_z_")
+                    and r[c].notna().any()
+                    for c in r.columns
+                )
+                dosed = (t & r["bit"]) if "bit" in r.columns else t
+                n_dosed = 0 if composed_block else int(dosed.sum())
+                gained_dosed = (
+                    float((~was & hit)[dosed].mean()) if n_dosed and not composed_block else np.nan
+                )
+                # k=0 leaves after == clean, so its zero is exact rather than
+                # an estimate that happened to see no events.
+                structural = bool(
+                    n
+                    and np.allclose(
+                        r.loc[t, "after"].to_numpy(dtype=float),
+                        r.loc[t, "clean"].to_numpy(dtype=float),
+                        equal_nan=True,
+                    )
+                )
+                auc = np.nan
+                if reference is not None and tally in reference:
+                    hot = r.loc[t, "after"].to_numpy(dtype=float)
+                    if scorer == "max" and gated:
+                        hot = gated_score(
+                            hot, r.loc[t, "sigma_after"].to_numpy(dtype=float), sigma_gate
+                        )
+                    auc = _auc(reference[tally], hot)
+                measurable = bool(o.any()) and r.loc[o, "after"].notna().sum() > 0
+                middle = spread = np.nan
+                stirred = 0
+                if measurable:
+                    # Bar crossings are too rare to measure collateral on, so
+                    # report the signed score shift of the player's OTHER
+                    # matches; rows whose fit never held the target cannot move.
+                    shift = r.loc[o, "after"] - r.loc[o, "clean"]
+                    moved = shift[shift.abs() > 1e-9]
+                    stirred = len(moved)
+                    spread = r.loc[o, "clean"].std()
+                    middle = float(moved.median()) if stirred else np.nan
+                rows.append(
+                    {
+                        "mechanism": name,
+                        "severity": k,
+                        "tally": tally,
+                        "bar": cut,
+                        "n": n,
+                        "caught": float(hit[t].mean()) if n else np.nan,
+                        "recovery": gained,
+                        "recovery_se": _recovery_se(gained, n, structural),
+                        "n_short": (
+                            int(r.loc[t, "short"].sum()) if n and "short" in r.columns else 0
+                        ),
+                        "allocated": (
+                            float(r.loc[t, "allocated"].mean())
+                            if n and "allocated" in r.columns
+                            else np.nan
+                        ),
+                        "n_dosed": n_dosed,
+                        "recovery_dosed": gained_dosed,
+                        "recovery_dosed_se": _recovery_se(gained_dosed, n_dosed, structural),
+                        "auc": auc,
+                        # Delivered dose belongs beside detection: mechanisms differ
+                        # in how much of the requested sigma they can actually apply,
+                        # so a row-to-row comparison reads delivery as detectability
+                        # unless both are visible.
+                        # Composed rows mix NaN (dosed) with 0.0 (no-op) in
+                        # `achieved`, so a NaN-skipping mean prints "+0.00 sd" for a
+                        # delivered dose. Per-DOF columns carry delivery there.
+                        "achieved": (
+                            float(r.loc[t, "achieved"].mean())
+                            if n and "achieved" in r.columns and not composed_block
+                            else np.nan
+                        ),
+                        "clipped": (
+                            float(r.loc[t, "clipped"].mean())
+                            if n and "clipped" in r.columns
+                            else np.nan
+                        ),
+                        "collateral_measurable": measurable,
+                        "others_before": float(was[o].mean()) if measurable else np.nan,
+                        "others_after": float(hit[o].mean()) if measurable else np.nan,
+                        "contaminated": stirred,
+                        "n_other": int(o.sum()),
+                        "shift": middle,
+                        "shift_sd": (
+                            middle / spread
+                            if measurable and spread and np.isfinite(spread)
+                            else np.nan
+                        ),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def clipped_note(block: pd.DataFrame) -> str:
+    """Share of injected targets whose dose was TRUNCATED by a mechanism
+    running out of substrate -- successes to relabel, actions to remove or
+    touches to relocate.
+
+    Sits beside the achieved dose because it qualifies it: a truncated row got
+    less than was asked for, so a miss there is delivery, not detection. On
+    composed rows this should be near zero, because the allocator caps each
+    channel at its capacity and so pre-empts the clamp.
+    """
+    on_target = block[block.is_target]
+    if "clipped" not in block.columns or not len(on_target):
+        return ""
+    share = float(on_target["clipped"].mean())
+    return f"  clipped {share:.1%}" if share else ""
+
+
+def reference_scores(
+    scored: pd.DataFrame,
+    census: pd.DataFrame,
+    sigma_gate: float = baseline.CORROBORATING_SIGMA,
+) -> dict[str, np.ndarray]:
+    """Clean-population score per tally -- the AUC's reference set.
+
+    The CENSUS, never the results frame. Targets are median-selected and so
+    unrepresentative by construction; a results-frame reference would inflate
+    every AUC and be invisible in the output, since nothing in the table shows
+    what it was compared against.
+    """
+    flagged = baseline.flag(scored)
+    top = flagged["max_abs_z"].to_numpy(dtype=float)
+    out = {
+        "max": gated_score(top, flagged["sd_from_mean"].to_numpy(dtype=float), sigma_gate),
+        "max_ungated": top,
+    }
+    for name in SCORERS + FOREST_SCORERS:
+        if name != "max" and name in census:
+            out[name] = census[name].to_numpy(dtype=float)
+    return out
 
 
 def census_rates(
@@ -677,8 +1167,16 @@ def census_rates(
     -- a bug check, and the anchor every other rate is read against."""
     flagged = baseline.flag(scored, rate)
     parts = [f"max {flagged['is_flagged'].mean():.4%}"]
-    for name in SCORERS:
-        if name == "max":
+    # The ungated bar applied to the clean census with NO gate must flag its
+    # nominal rate. This is what catches the leak that would look right and be
+    # wrong: reusing bars["max"] (the JOINT threshold, 3.310) for the ungated
+    # tally instead of its own quantile (3.466) prints 1.339% here against a
+    # 1.000% target, and a rate mix-up prints 1% where 5% is claimed.
+    if np.isfinite(bars.get("max_ungated", np.nan)):
+        z = flagged["max_abs_z"].dropna()
+        parts.append(f"max_ungated {(z >= bars['max_ungated']).mean():.4%}")
+    for name in SCORERS + FOREST_SCORERS:
+        if name == "max" or name not in census:
             continue
         column = census[name].dropna()
         if not len(column) or not np.isfinite(bars[name]):
@@ -692,9 +1190,19 @@ def summary_persistent(
     results: pd.DataFrame,
     bars: dict[str, float],
     sigma_gate: float = baseline.CORROBORATING_SIGMA,
+    rate: float = baseline.DEFAULT_FLAG_RATE,
+    reference: dict[str, np.ndarray] | None = None,
 ) -> str:
-    """Detection on the fixed match, and what it did to the player's others."""
+    """Detection on the fixed match, and what it did to the player's others.
+
+    The shipped rule is reported TWICE over the same rows: gated (as deployed)
+    and ungated (max|z| alone). Their difference is the corroboration gate's
+    cost, which is the most decision-relevant number either produces, and it
+    is free -- both scores are already recorded, the gate only being applied
+    at tally time.
+    """
     lines = []
+    stats = cell_statistics(results, bars, sigma_gate, reference)
     for name in results["mechanism"].unique():
         for k in sorted(results.loc[results.mechanism == name, "severity"].unique()):
             block = results[(results.mechanism == name) & (results.severity == k)]
@@ -709,45 +1217,85 @@ def summary_persistent(
             ]
             if per_dof:
                 on_target = block[block.is_target]
-                delivered = "  ".join(
-                    f"{p} {on_target[f'achieved_{p}'].mean():+.2f}sd"
-                    f"/{on_target[f'achieved_z_{p}'].mean():+.2f}z"
-                    for p in per_dof
+
+                def dof(part: str) -> str:
+                    # A dropped metric has no z column in this feature set, so
+                    # its shift is unmeasurable here -- say so rather than
+                    # printing "+nan", which reads as a defect.
+                    shift = on_target[f"achieved_z_{part}"].mean()
+                    scale = f"{on_target[f'achieved_{part}'].mean():+.2f}sd"
+                    # Truncation per DOF, beside delivery per DOF: composing
+                    # runs removal first, so a relabelling meets a denominator
+                    # that removal has already eaten and its floor binds harder.
+                    # A channel that never fired has exactly zero achieved, so
+                    # its firing rate needs no extra plumbing -- and without it
+                    # a dead channel reads as a weak one.
+                    marks = []
+                    acted = float((on_target[f"achieved_{part}"].abs() > 1e-9).mean())
+                    if acted < 1.0:
+                        marks.append(f"acted {acted:.0%}")
+                    if f"clipped_{part}" in on_target.columns:
+                        share = float(on_target[f"clipped_{part}"].mean())
+                        if share:
+                            marks.append(f"clip {share:.0%}")
+                    tail = f"[{', '.join(marks)}]" if marks else ""
+                    return (
+                        f"{part} {scale}/" + ("n/a" if pd.isna(shift) else f"{shift:+.2f}z") + tail
+                    )
+
+                delivered = "  ".join(dof(p) for p in per_dof)
+                # The k on the label is a claim. Say when it was not met, and
+                # by how much, rather than leaving the label to stand alone.
+                short = ""
+                on = block[block.is_target]
+                if "short" in block.columns and on["short"].any():
+                    mean_k = on.loc[on["short"], "allocated"].mean()
+                    short = (
+                        f"\n   !! {int(on['short'].sum()):,}/{len(on):,} rows could not reach "
+                        f"k={k:g}; those rows averaged {mean_k:.2f} sigma"
+                    )
+                lines.append(
+                    f"\n-- {name}  k={k:g}  per-DOF {delivered}{clipped_note(block)}{short}"
                 )
-                lines.append(f"\n-- {name}  k={k:g}  per-DOF {delivered}")
             else:
                 lines.append(
                     f"\n-- {name}  k={k:g}  "
                     f"achieved {block.loc[block.is_target, 'achieved'].mean():+.2f} sd"
                     f"  ({block.loc[block.is_target, 'achieved_z'].mean():+.2f} z)"
+                    f"{clipped_note(block)}"
                 )
-            for scorer in SCORERS:
-                r = block[block.scorer == scorer]
-                if r.empty:
+            cells = stats[(stats.mechanism == name) & (stats.severity == k)]
+            for row in cells.itertuples():
+                label = row.tally
+                if label == "max":
+                    # The gate is a hard ceiling: it fires on a fixed share of
+                    # rows, so past that share no z bar reaches the requested
+                    # rate. Flag it from the comparison, so a future estimator
+                    # that lifts the ceiling drops the asterisk on its own.
+                    delivered = bars.get("max_delivered", np.nan)
+                    if np.isfinite(delivered) and delivered + 1e-9 < rate:
+                        label = f"max*({delivered:.2%} del)"
+                auc = f" | auc {row.auc:.3f}" if np.isfinite(row.auc) else ""
+                dosed = (
+                    f" -> {row.recovery_dosed:.1%}+-{row.recovery_dosed_se:.1%}"
+                    f" of {row.n_dosed:,} dosed"
+                    if np.isfinite(row.recovery_dosed)
+                    else ""
+                )
+                head = (
+                    f"  {label:12} bar {row.bar:6.2f}"
+                    f" | caught {row.caught:5.1%}"
+                    f" | recovered {row.recovery:5.1%}+-{row.recovery_se:.1%}"
+                    f" (n={row.n:,}){dosed}{auc}"
+                )
+                if not row.collateral_measurable:
+                    lines.append(f"{head} | collateral not measured (heldout)")
                     continue
-                cut = bars[scorer]
-                gate_after = r["sigma_after"].abs() >= sigma_gate
-                gate_clean = r["sigma_clean"].abs() >= sigma_gate
-                hit = r["after"] >= cut
-                was = r["clean"] >= cut
-                if scorer == "max":
-                    hit, was = hit & gate_after, was & gate_clean
-                t, o = r.is_target, ~r.is_target
-                # Bar crossings are too rare to measure collateral on, so
-                # report the signed score shift of the player's OTHER matches;
-                # rows whose fit never contained the target cannot move, so
-                # they are excluded from the median.
-                shift = r.loc[o, "after"] - r.loc[o, "clean"]
-                spread = r.loc[o, "clean"].std()
-                stirred = shift[shift.abs() > 1e-9]
-                middle = stirred.median() if len(stirred) else np.nan
                 lines.append(
-                    f"  {scorer:12} bar {cut:6.2f}"
-                    f" | target caught {hit[t].mean():5.1%} (n={int(t.sum()):,})"
-                    f" | others {was[o].mean():5.1%} -> {hit[o].mean():5.1%}"
-                    f" | of {len(stirred):,}/{int(o.sum()):,} contaminated:"
-                    f" shift {middle:+.4f}"
-                    f" ({middle / spread if spread else np.nan:+.3f} sd)"
+                    f"{head}"
+                    f" | others {row.others_before:5.1%} -> {row.others_after:5.1%}"
+                    f" | of {row.contaminated:,}/{row.n_other:,} contaminated:"
+                    f" shift {row.shift:+.4f} ({row.shift_sd:+.3f} sd)"
                 )
     return "\n".join(lines)
 
@@ -766,7 +1314,8 @@ def main(argv: list[str] | None = None) -> int:
         "--compose",
         action="append",
         metavar="M1,M2,...",
-        help="mechanisms injected JOINTLY on the same match at k/sqrt(n) each; "
+        help="mechanisms injected JOINTLY on the same match, k allocated across "
+        "them in quadrature against each channel's capacity; "
         "repeatable. Given alone it replaces the singles; add --mechanism "
         "to run singles alongside.",
     )
@@ -801,8 +1350,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--forest",
         action="store_true",
-        help="also score the isolation forest in the census. One fit per row, so "
-        "pair it with --jobs; a cached --census built without it has no forest column.",
+        help="score the isolation forests too. One fit per scored row, so pair "
+        "it with --jobs and prefer --design heldout; a cached --census built "
+        "without forests has no forest columns.",
+    )
+    parser.add_argument(
+        "--design",
+        choices=("persistent", "heldout"),
+        default="persistent",
+        help="persistent leaves the fixed match in the player's history and "
+        "measures what it does to his other matches (collateral), at a fit "
+        "per row per frame. heldout scores only each scorer's own targets "
+        "against criteria fixed on the clean census -- no collateral, cheap "
+        "enough for forests. Target scores are identical either way.",
     )
     args = parser.parse_args(argv)
 
@@ -828,10 +1388,15 @@ def main(argv: list[str] | None = None) -> int:
     # Every eligible row scored clean: the population the bars come from and
     # the pool each scorer picks its target out of.
     cache = Path(args.census) if args.census else None
-    if cache and dropped:
-        cache = cache.with_name(f"{cache.stem}.drop-{'-'.join(dropped)}{cache.suffix}")
+    if cache:
+        total = scored["player_id"].nunique()
+        players = min(args.n, total) if args.n else total
+        suffix = f".drop-{'-'.join(dropped)}" if dropped else ""
+        # Population in the key: otherwise a --n pilot and the full run share
+        # a filename, and the pilot is reloaded and reported as the full set.
+        cache = cache.with_name(f"{cache.stem}{suffix}.n{players}{cache.suffix}")
     if cache and cache.exists():
-        census = pd.read_parquet(cache)
+        census = heldout.read_census(cache, scored)
     else:
         census = heldout.score_all(
             scored,
@@ -841,7 +1406,7 @@ def main(argv: list[str] | None = None) -> int:
             forest=args.forest,
         )
         if cache:
-            census.to_parquet(cache, index=False)
+            heldout.write_census(cache, census, scored)
     bars = heldout.production_bars(scored, census, args.rate)
     if args.mechanism:
         chosen = {m: MECHANISMS[m] for m in args.mechanism}
@@ -856,9 +1421,10 @@ def main(argv: list[str] | None = None) -> int:
         mechanisms=chosen,
         compositions=compositions,
         metrics=metrics,
-        limit_players=args.n,
         seed=args.seed,
         jobs=args.jobs,
+        forest=args.forest,
+        design=args.design,
     )
     if args.out:
         results.to_parquet(args.out, index=False)

@@ -132,6 +132,9 @@ def test_single_mechanism_through_compose_is_bit_identical():
                     (name,),
                     lambda m, s, tag=tag: _rng_for(m, s, tag),
                 )
+                # compose() strips the truncation marker before it can reach the
+                # frame as a column, so it is never in `merged`.
+                direct = {c: v for c, v in direct.items() if c != injection_test.CLIPPED}
                 assert set(merged) == set(direct)
                 for column, value in direct.items():
                     assert _same(merged[column], value), (name, k, column)
