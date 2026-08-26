@@ -138,7 +138,11 @@ def scale_ratio(frame: pd.DataFrame, metric: str, draws: int = SCALE_DRAWS) -> f
     """
     spreads, variances, sizes = [], [], []
     for player, group in frame.groupby("player_id"):
-        values = group[metric].dropna().to_numpy(dtype=float)
+        # SORTED: the seed fixes the resample INDICES, so an unsorted array
+        # makes the draw depend on row order -- and the frame's order is the
+        # warehouse's scan order, which no query pins. A bootstrap over a
+        # multiset must be a function of the values, not of their presentation.
+        values = np.sort(group[metric].dropna().to_numpy(dtype=float))
         if len(values) < 3:
             continue
         rng = np.random.default_rng(zlib.crc32(f"{player}:{metric}".encode()))
