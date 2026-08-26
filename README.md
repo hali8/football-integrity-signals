@@ -9,12 +9,12 @@ match, and gives a duckdb/dbt warehouse to build match-integrity signals on top 
 
 Each stage reads only the output of the one before it:
 
-| Stage               | Reads                         | Writes                         |
-| ------------------- | ----------------------------- | ------------------------------ |
-| `fis-fetch-wyscout` | upstream GitHub, Figshare     | `data/download/`, `data/json/` |
-| `src/fis/ingest/`   | `data/download/`              | `data/parquet/`                |
-| `warehouse/`        | `data/parquet/`, `data/json/` | marts (duckdb)                 |
-| `analysis/`         | marts                         | figures, tables, findings      |
+| Stage             | Reads                         | Writes                         |
+| ----------------- | ----------------------------- | ------------------------------ |
+| `fis-fetch`       | upstream GitHub, Figshare     | `data/download/`, `data/json/` |
+| `src/fis/ingest/` | `data/download/`              | `data/parquet/`                |
+| `warehouse/`      | `data/parquet/`, `data/json/` | marts (duckdb)                 |
+| `analysis/`       | marts                         | figures, tables, findings      |
 
 The dimension files are read in place; only the event data justified a
 materialisation stage. Events need kloppy to decode them and there are 1941
@@ -83,8 +83,8 @@ mode, which puts the console scripts on your `PATH`.
 ## Quick start
 
 ```bash
-fis-fetch-wyscout      # download the dataset  (~255 MiB, 1941 matches)
-fis-ingest-wyscout     # convert JSON -> parquet
+fis-fetch      # download the dataset  (~255 MiB, 1941 matches)
+fis-ingest     # convert JSON -> parquet
 ```
 
 Or via pixi tasks, without activating the environment:
@@ -101,7 +101,7 @@ finds — see [Knowing when the parquet is out of date](#knowing-when-the-parque
 To ingest a handful of matches while iterating:
 
 ```bash
-fis-ingest-wyscout --limit 10
+fis-ingest --limit 10
 ```
 
 ## Where data goes
@@ -161,11 +161,11 @@ in a temp directory and swapped into place, so an interrupted run cannot leave a
 half-populated directory that a later run mistakes for complete.
 
 ```bash
-fis-fetch-wyscout --commit <sha>          # one-off override
-fis-fetch-wyscout --force                 # re-download regardless
-fis-fetch-wyscout --dest /scratch/wyscout # somewhere else entirely
-fis-fetch-wyscout --no-reference          # skip the Figshare tables
-fis-fetch-wyscout --no-audit              # skip the post-download checks
+fis-fetch --commit <sha>          # one-off override
+fis-fetch --force                 # re-download regardless
+fis-fetch --dest /scratch/wyscout # somewhere else entirely
+fis-fetch --no-reference          # skip the Figshare tables
+fis-fetch --no-audit              # skip the post-download checks
 ```
 
 ### Reference tables
@@ -552,6 +552,11 @@ warehouse.mart("fct_player_match_metrics")
 warehouse.mart("fct_player_match_metrics", columns=["player_id", "pass_completion_pct"])
 ```
 
+The analysis entry points all read the mart through it: `fis-baseline`
+(publishes flags), `fis-injection-test` (sensitivity harness),
+`fis-report` (Phase 2 tables, written to `data/reports/`),
+`fis-feature-sweep` (leave-one-variable-out arms).
+
 Every failure names the remedy rather than surfacing a duckdb traceback. Asking
 for a column that does not exist:
 
@@ -601,20 +606,25 @@ drift apart.
 src/fis/
 ├── paths.py                  path resolution — single source of truth
 ├── warehouse.py              mart access — the only input for analysis
-├── data/wyscout.py           dataset fetch    -> fis-fetch-wyscout
+├── data/wyscout.py           dataset fetch    -> fis-fetch
 ├── data/figshare.py          reference tables -> data/json
 ├── data/audit.py             post-download checks, scoped by dataset
 ├── data/dbt_docs.py          publisher field docs -> dbt doc blocks
-├── ingest/wyscout.py         JSON -> parquet  -> fis-ingest-wyscout
+├── ingest/wyscout.py         JSON -> parquet  -> fis-ingest
 ├── ingest/kloppy_workarounds.py   repairs for four deserialisation defects
 └── analysis/                 reads marts only; ruff.toml enforces it
+    ├── baseline.py           per-player residuals, EB shrinkage -> fis-baseline
+    ├── heldout.py            leave-one-out census, forests, bars
+    ├── injection_test.py     injection mechanisms + harness -> fis-injection-test
+    ├── report.py             the Phase 2 tables            -> fis-report
+    └── feature_sweep.py      leave-one-variable-out arms    -> fis-feature-sweep
 warehouse/
 ├── dbt_project.yml           dbt project
 ├── profiles.yml              duckdb target
 ├── macros/                   reusable SQL, e.g. the unicode decoder
 ├── models/{staging,intermediate,marts,audit}
 └── tests/                    singular tests, plus tests/generic/
-utils/                        thin shell wrapper around fis-fetch-wyscout
+utils/                        thin shell wrapper around fis-fetch
 .github/workflows/ci.yml      lint + package/dbt-parse
 ```
 
@@ -630,11 +640,42 @@ kloppy defects, one of which was silently deleting 4,400 events, and two of the
 metric definitions turn on Wyscout conventions that are documented nowhere. Those
 are written up where they bite, not collected in one place.
 
-A scoring layer sits on top of the mart (`src/fis/analysis/`: `baseline.py`,
-`heldout.py`, `injection_test.py`) — per-player residuals with empirical-Bayes
-shrinkage, an isolation-forest comparison, and a sigma-calibrated injection
-harness for measuring detector sensitivity. It is undocumented here so far;
-the code is the only reference. As of 2026-08-25 it is mid-revision (a match-
-count gate was replaced with continuous shrinkage plus a stated evaluation
-floor, and a validation run is in progress) and not yet settled enough to
-write up.
+A scoring layer sits on top of the mart (`src/fis/analysis/`) — per-player
+residuals with empirical-Bayes shrinkage at three levels (location, scale,
+covariance), a leave-one-out census with Mahalanobis and isolation-forest
+scorers in both raw and residual space, and a sigma-calibrated injection
+harness for measuring detector sensitivity.
+
+The estimator work is settled as of 2026-08-26: match-count gates replaced by
+continuous shrinkage plus a stated evaluation floor (`MIN_PLAYER_MATCHES = 5`,
+a policy decision rather than an estimator threshold), and every remaining
+hyperparameter estimated rather than asserted. `fis-report` renders the
+sensitivity tables to markdown; `fis-baseline` publishes
+`fct_player_match_flags`.
+
+## Validation
+
+One full-population sensitivity campaign has been run (2026-08-26: 43,993
+scoreable player-matches, 2,140 players; eight scorers against five single
+mechanisms plus a coordinated four-channel injection, dose calibrated in
+per-player sigma). Two headline results:
+
+- **The detection floor is 0.483, not 0.5.** Injection targets are
+  median-selected, so they fire the corroboration gate far less often than the
+  population; every AUC must be read against the measured k=0 row, not the
+  conventional no-skill line.
+- **The scorer ordering flips with the threat model.** Against a single-metric
+  manipulation the shipped max|z| rule is competitive and the isolation
+  forests are last; against the coordinated injection the forests recover
+  **2.3× the shipped rule** (21.1% vs 9.3% of injected targets at the 1% bar,
+  k=3). Against the manipulation a real fixer most resembles, the shipped rule
+  is the weakest scorer tested.
+
+[Full sensitivity tables](results/phase2.md) — regenerated by `fis-report`
+from a saved results parquet, so the tables re-render without re-running the
+analysis.
+
+The caveat that survives: the population is observed, not certified-clean, so
+base rates are upper bounds on false-positive rate — and these numbers measure
+sensitivity to _simulated_ manipulation. None of this is validated against a
+confirmed real case.
