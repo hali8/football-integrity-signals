@@ -41,7 +41,7 @@ analysis = [
   # happens to depend on it, but a direct import is a direct dependency.
   "joblib>=1.3",
 ]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.6", "pre-commit>=4.6"]
 
 [project.urls]
 Homepage = "https://github.com/sahalyacoob/football-integrity-signals"

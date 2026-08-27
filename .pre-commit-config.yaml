@@ -44,3 +44,15 @@ repos:
         # SQL is left to dbt/sqlfluff; prettier has no dbt-jinja support.
         types_or: [yaml, markdown, json]
         exclude: ^pixi\.lock$
+
+  - repo: local
+    hooks:
+      # On PUSH, not commit: the report only matters once it is published, and
+      # blocking every local commit on it would make SKIP= a reflex.
+      - id: report-freshness
+        name: published report matches the analysis code
+        entry: python3 scripts/report_freshness.py
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true

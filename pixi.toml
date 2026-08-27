@@ -21,7 +21,7 @@ dbt = "dbt"
 # Includes the stage-rule import bans under src/fis/analysis/.
 lint = "ruff check src"
 # Run once per clone: installs .git/hooks/pre-commit.
-hooks-install = "pre-commit install"
+hooks-install = "pre-commit install --hook-type pre-commit --hook-type pre-push"
 hooks = "pre-commit run --all-files"
 # The slow marker walks all 1941 matches; skip it for the quick loop.
 test = "pytest -m 'not slow'"
@@ -39,6 +39,7 @@ pyarrow = ">=25.0.0,<26"
 matplotlib = ">=3.11.1,<4"
 scikit-learn = ">=1.5,<2"
 joblib = ">=1.3"
+ruff = ">=0.6,<1"
 pre-commit = ">=4.6.2,<5"
 pytest = ">=9.1.1,<10"
 
