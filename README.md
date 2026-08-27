@@ -17,20 +17,13 @@ Each stage reads only the output of the one before it:
 | `analysis/`       | marts                         | figures, tables, findings      |
 
 The dimension files are read in place; only the event data justified a
-materialisation stage. Events need kloppy to decode them and there are 1941
-files of it, so it earns a Python step and a typed parquet layer. Players,
-teams, referees, coaches and competitions are a few megabytes of JSON that
-duckdb reads directly, and flattening their nested structure is staging-model
-work that belongs in SQL where it can be reviewed.
+materialisation stage. Events need kloppy to decode them to a typed parquet layer before dbt sees them. dbt reads dimensions — players, teams, referees, coaches, competitions — in place. From there both paths are the same: staging models flatten and type-repair them, and the marts are built in duckdb, which is all analysis ever reads.
 
-**Nothing in `analysis/` touches raw JSON — a missing column there means a missing
+**Nothing in `analysis/` touches raw data — a missing column required by analaysis requires an update to the 
 dbt model, not a backwards reach.**
 
-The rule earns its keep at exactly the moment it is inconvenient. Reaching back to
-`data/parquet/` (or worse, the JSON) from an analysis script is always the faster
-fix in the moment, and it is how the warehouse quietly stops being the source of
-truth: two definitions of the same quantity drift apart, and neither is wrong
-anywhere you can see. If a mart lacks a column, add it to the mart.
+the warehouse should always be the source of
+truth -- avoiding invisible definition drift.
 
 `data/download/` is immutable and disposable — pinned upstream content, deletable
 and re-fetchable at any time. Everything downstream of it is reproducible by
@@ -305,8 +298,7 @@ which drops the last event appended without checking that it is a duel. When the
 tagged duel is the first of its pair the partner comes _after_ it, so the event
 deleted is whatever preceded it: **4400 events across 1690 matches, including 35
 shots**. Only 310 leave a dangling `interception-<id>` behind; the other 4090
-disappear with nothing marking their absence. A crash costs you a match you know
-about. This costs you events you do not.
+disappear with nothing marking their absence. So we had been losing events silently.
 
 **These workarounds are meant to die.** An upstream fix would make them
 unreachable — the first three because nothing raises, the fourth because the
@@ -377,9 +369,8 @@ it is yours to get right.
 
 ### Adding a source
 
-There is no bespoke verification script, and deliberately so: everything worth
-checking is a dbt test, which means it runs in CI and in `dbt build` alongside
-everything else rather than only when someone remembers to invoke it.
+verification is done in CI and in `dbt build` alongside
+everything else.
 
 1. Add the table under the right group in
    [\_sources.yml](warehouse/models/staging/_sources.yml). A new file format
@@ -660,10 +651,6 @@ scoreable player-matches, 2,140 players; eight scorers against five single
 mechanisms plus a coordinated four-channel injection, dose calibrated in
 per-player sigma). Two headline results:
 
-- **The detection floor is 0.483, not 0.5.** Injection targets are
-  median-selected, so they fire the corroboration gate far less often than the
-  population; every AUC must be read against the measured k=0 row, not the
-  conventional no-skill line.
 - **The scorer ordering flips with the threat model.** Against a single-metric
   manipulation the shipped max|z| rule is competitive and the isolation
   forests are last; against the coordinated injection the forests recover
