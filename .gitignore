@@ -253,3 +253,9 @@ DATASET-ISSUE.md
 
 # Ad-hoc analysis kept to hand, not shipped. Findings live in PROBLEMS.md.
 pass_twins.sql
+
+# Downloaded and derived data; nothing under it belongs in the repository.
+data/
+.DS_Store
+codex_claude_handoff.md
+SESSION-STATE.md
