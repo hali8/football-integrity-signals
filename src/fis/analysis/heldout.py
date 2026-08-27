@@ -92,19 +92,59 @@ def _data_fingerprint(scored: pd.DataFrame) -> str:
     # Raw metrics AND residuals: the census consumes both directly, so a
     # frame whose z columns moved while its counts did not must still fail.
     columns = [c for c in (*baseline.METRICS, *residual_columns(baseline.METRICS)) if c in scored]
-    body = "|".join(
-        [str(len(scored)), str(scored["player_id"].nunique())]
-        + [f"{c}:{float(scored[c].sum(skipna=True)):.4f}" for c in columns]
-    )
-    return hashlib.sha256(body.encode()).hexdigest()[:16]
+    # Every input score_all reads, not just the metrics: position_code picks
+    # the position pool and its shrinkage target, and match_id drives the
+    # leave-one-out exclusion, so either can move the census on its own.
+    keys = [c for c in ("player_id", "match_id", "position_code") if c in scored]
+    # Per row, not per column sum. A census is aligned to this frame by
+    # position, so a reordering or an offsetting pair of edits must break the
+    # hash; column totals see neither.
+    rows = pd.util.hash_pandas_object(scored[[*keys, *columns]], index=False)
+    digest = hashlib.sha256()
+    digest.update("|".join(["v3", str(len(scored)), *keys, *columns]).encode())
+    digest.update(rows.to_numpy().tobytes())
+    return digest.hexdigest()[:16]
 
 
-def fingerprint(scored: pd.DataFrame, extra: tuple = ()) -> str:
+def scoring_config(
+    metrics: list[str] | None = None, forest: bool = False, limit_players: int | None = None
+) -> str:
+    """The arguments to :func:`score_all` that change the census it returns.
+
+    The frame hash cannot see these: ``metrics`` and ``forest`` decide which
+    columns exist, and ``limit_players`` caps the population INSIDE the call, so
+    a partial census would otherwise be stamped against the whole frame. ``jobs``
+    is excluded -- verified byte-identical at every setting.
+    """
+    # NOT sorted: metric order reaches the forest through feature indices, so
+    # two orders can score differently. Canonicalising would let one stamp cover
+    # both; preserving it can only cost a cache miss.
+    chosen = ",".join(metrics or baseline.METRICS)
+    return f"metrics={chosen}|forest={bool(forest)}|players={limit_players}"
+
+
+def results_config(scoring: str, seed: int) -> str:
+    """What changes an injection run's output beyond the code and the frame.
+
+    Separate from :func:`scoring_config` because the census does NOT depend on
+    the injection seed while the results do -- stamping both with the scoring
+    settings alone lets a run under one seed be reused under another. The design
+    constants move with the injection_test code fingerprint already.
+    """
+    return f"{scoring}|seed={seed}"
+
+
+def fingerprint(scored: pd.DataFrame, extra: tuple = (), config: str = "") -> str:
     """What a stamped frame must match to be reused."""
-    return f"v{FINGERPRINT_VERSION}.{_data_fingerprint(scored)}.{_code_fingerprint(extra)}"
+    return (
+        f"v{FINGERPRINT_VERSION}.{_data_fingerprint(scored)}"
+        f".{_code_fingerprint(extra)}.{hashlib.sha256(config.encode()).hexdigest()[:8]}"
+    )
 
 
-def write_stamped(path: Path, frame: pd.DataFrame, scored: pd.DataFrame, extra: tuple = ()) -> None:
+def write_stamped(
+    path: Path, frame: pd.DataFrame, scored: pd.DataFrame, extra: tuple = (), config: str = ""
+) -> None:
     """Cache any derived frame, stamped with the data and code that made it."""
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -113,13 +153,17 @@ def write_stamped(path: Path, frame: pd.DataFrame, scored: pd.DataFrame, extra: 
     table = pa.Table.from_pandas(frame, preserve_index=False)
     stamped = {
         **(table.schema.metadata or {}),
-        b"fis_fingerprint": fingerprint(scored, extra).encode(),
+        b"fis_fingerprint": fingerprint(scored, extra, config).encode(),
     }
     pq.write_table(table.replace_schema_metadata(stamped), path)
 
 
 def read_stamped(
-    path: Path, scored: pd.DataFrame, what: str = "cache", extra: tuple = ()
+    path: Path,
+    scored: pd.DataFrame,
+    what: str = "cache",
+    extra: tuple = (),
+    config: str = "",
 ) -> pd.DataFrame:
     """Load a stamped frame, refusing one the current inputs did not produce.
 
@@ -130,7 +174,7 @@ def read_stamped(
     import pyarrow.parquet as pq
 
     stored = (pq.read_schema(path).metadata or {}).get(b"fis_fingerprint", b"").decode()
-    current = fingerprint(scored, extra)
+    current = fingerprint(scored, extra, config)
     if stored != current:
         raise ValueError(
             f"{what} at {path} was built from different inputs "
@@ -140,14 +184,14 @@ def read_stamped(
     return pd.read_parquet(path)
 
 
-def write_census(path: Path, census: pd.DataFrame, scored: pd.DataFrame) -> None:
-    """Cache a census, stamped with the data and code that produced it."""
-    write_stamped(path, census, scored)
+def write_census(path: Path, census: pd.DataFrame, scored: pd.DataFrame, config: str = "") -> None:
+    """Cache a census, stamped with the data, code and settings that made it."""
+    write_stamped(path, census, scored, config=config)
 
 
-def read_census(path: Path, scored: pd.DataFrame) -> pd.DataFrame:
+def read_census(path: Path, scored: pd.DataFrame, config: str = "") -> pd.DataFrame:
     """Load a cached census, refusing one the current inputs did not produce."""
-    return read_stamped(path, scored, what="census")
+    return read_stamped(path, scored, what="census", config=config)
 
 
 #: Positions pooled for the fallback fit.

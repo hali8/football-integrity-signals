@@ -23,7 +23,6 @@ import pandas as pd
 
 from fis.analysis import baseline, heldout, injection_test
 
-
 #: Doses for the sweep, now identical to injection_test's ruled ladder.
 SEVERITIES = injection_test.SEVERITIES
 
@@ -74,12 +73,13 @@ def sweep(
         # same filename as the full campaign would otherwise be read back
         # silently and reported as the full population.
         path = cache / f"{name.replace(':', '-')}.n{players}.parquet" if cache else None
+        settings = heldout.scoring_config(metrics=metrics, forest=True)
         if path is not None and path.exists():
-            census = heldout.read_census(path, scored)
+            census = heldout.read_census(path, scored, config=settings)
         else:
             census = heldout.score_all(scored, metrics=metrics, forest=True, jobs=jobs)
             if path is not None:
-                heldout.write_census(path, census, scored)
+                heldout.write_census(path, census, scored, config=settings)
         bars = heldout.production_bars(scored, census, rate)
         results = injection_test.run(
             scored,
