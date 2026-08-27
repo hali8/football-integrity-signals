@@ -22,10 +22,10 @@ manipulation across four variables the order reverses: the forests recover
 **2.1× max|z|** (21.7% against 10.4% of injected targets, 1% bar, k=3). The case
 a real fixer most resembles is the one max|z| handles worst.
 
-That ordering is about the cut rather than about ranking. At every dose the
-forests have the LOWER AUC — `mahalanobis_res` reaches 0.922 against the
-forest's 0.862 at k=3 — so they rank perturbed rows above clean ones less
-reliably, and win by moving fewer rows further past the bar.
+That lead belongs to the cut, not to the scorer. At the 5% bar the order
+reverses again — `mahalanobis_res` recovers 44.8% against the forest's 43.7% on
+the same injection — so which scorer wins depends on where the threshold is
+set.
 
 [Full sensitivity tables](results/phase2.md)
 
@@ -90,7 +90,6 @@ cannot be installed from this repository:
 
 ```bash
 curl -fsSL https://pixi.sh/install.sh | sh   # macOS / Linux
-brew install pixi                            # macOS, via Homebrew
 winget install prefix-dev.pixi               # Windows
 ```
 
