@@ -24,7 +24,7 @@ repos:
         args: [--maxkb=1024]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.1
+    rev: v0.16.4
     hooks:
       # Honours the nested src/fis/analysis/ruff.toml, so the stage-rule import
       # bans are enforced here too.

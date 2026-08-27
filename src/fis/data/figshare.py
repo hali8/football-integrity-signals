@@ -26,8 +26,8 @@ import argparse
 import hashlib
 import html
 import json
-import re
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -194,7 +194,7 @@ def repair_truncated_array(raw: str) -> tuple[list, bool] | None:
 
 def _parse_field_docs(description: str) -> dict[str, str]:
     """Pull "- <b>field</b>: text" lines out of an article description."""
-    text = re.sub(r"<(div|br|li|p)[^>]*>", "\n", description, flags=re.I)
+    text = re.sub(r"<(div|br|li|p)[^>]*>", "\n", description, flags=re.IGNORECASE)
     text = html.unescape(re.sub(r"<[^>]+>", "", text))
     fields: dict[str, str] = {}
     for line in text.split("\n"):
@@ -206,7 +206,7 @@ def _parse_field_docs(description: str) -> dict[str, str]:
 
 def _summary(description: str) -> str:
     """The article's own one-paragraph account of what the table is."""
-    text = re.sub(r"<(div|br|li|p)[^>]*>", "\n", description, flags=re.I)
+    text = re.sub(r"<(div|br|li|p)[^>]*>", "\n", description, flags=re.IGNORECASE)
     text = html.unescape(re.sub(r"<[^>]+>", "", text))
     for para in (p.strip() for p in text.split("\n")):
         # Skip the citation boilerplate every article opens with.
@@ -222,7 +222,7 @@ def fetch_documentation(quiet: bool = False) -> dict:
     wanted += list(DOC_ONLY_ARTICLES.items())
     for table, article in wanted:
         url = f"https://api.figshare.com/v2/articles/{article}"
-        meta = json.loads(httpx.get(url, timeout=30.0).text)  # noqa: E501
+        meta = json.loads(httpx.get(url, timeout=30.0).text)
         description = meta.get("description") or ""
         docs[table] = {
             "title": meta.get("title"),

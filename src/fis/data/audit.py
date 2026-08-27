@@ -128,7 +128,7 @@ def audit(dataset: str, root: Path | None = None) -> list[Finding]:
     for check in REGISTRY[dataset]:
         try:
             findings.extend(check(Path(root)))
-        except Exception as exc:  # a broken check must not hide the other findings
+        except Exception as exc:  # noqa: BLE001 -- a broken check must not hide the others
             findings.append(Finding(ERROR, check.__name__, f"check itself failed: {exc!r}"))
     return findings
 
