@@ -64,6 +64,12 @@ MIN_MATRIX_PLAYERS = 10
 #: RENDER hash only this module. They fail differently -- see freshness().
 ANALYSIS_STAMP = "fis-analysis"
 RENDER_STAMP = "fis-render"
+#: Column and scorer renames, applied ONLY under --stale-ok so an artefact from
+#: before a rename can still be rendered. Never on the normal path, where the
+#: stamp refuses stale input outright.
+LEGACY_RENAMES = {"mahalanobis_z": "mahalanobis_res"}
+
+
 #: The one string both the banner and the pre-push hook test for.
 STALE_MARKER = "These numbers are stale"
 STALE_BANNER = (
@@ -193,6 +199,10 @@ def _save_svg(fig, path: Path) -> None:
     matplotlib.rcParams["svg.fonttype"] = "none"
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, format="svg", metadata={"Date": None}, bbox_inches="tight")
+    # Emit what the whitespace hooks would leave, so a fresh render is not
+    # rewritten on every commit and stays byte-comparable with the tracked file.
+    body = "\n".join(line.rstrip() for line in path.read_text().splitlines())
+    path.write_text(body.rstrip("\n") + "\n")
 
 
 def _styled(ax) -> None:
@@ -871,7 +881,10 @@ def main(argv: list[str] | None = None) -> int:
 
     cache = Path(args.census) if args.census else None
     if cache is not None and cache.exists():
-        census = pd.read_parquet(cache) if args.stale_ok else heldout.read_census(cache, scored)
+        if args.stale_ok:
+            census = pd.read_parquet(cache).rename(columns=LEGACY_RENAMES)
+        else:
+            census = heldout.read_census(cache, scored)
     else:
         census = heldout.score_all(scored, forest=args.forest, jobs=args.jobs)
         if cache is not None:
@@ -887,7 +900,8 @@ def main(argv: list[str] | None = None) -> int:
         # results file would otherwise survive a change to the allocator, a
         # capacity, a mechanism or the ladder and re-render silently stale.
         if args.stale_ok:
-            results = pd.read_parquet(saved)
+            results = pd.read_parquet(saved).rename(columns=LEGACY_RENAMES)
+            results["scorer"] = results["scorer"].replace(LEGACY_RENAMES)
             print(f"reading {saved} WITHOUT the stamp check; output banded stale")
         else:
             results = heldout.read_stamped(saved, scored, what="results", extra=(injection_test,))
