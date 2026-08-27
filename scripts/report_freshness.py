@@ -62,6 +62,7 @@ def main() -> int:
         done = subprocess.run(
             [sys.executable, "-m", "fis.analysis.report", "--out", str(REPORT)],
             env={**__import__("os").environ, "PYTHONPATH": "src"},
+            check=False,  # the returncode is inspected below, both ways
         )
         if done.returncode == 0:
             print(f"  {REPORT} regenerated -- stage it and commit again")
