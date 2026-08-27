@@ -1,12 +1,12 @@
 """Leave-one-variable-out sweep: every metric dropped from the feature set in turn.
 
-Arms are the shipped set plus one per metric removed. The sweep owns arm
+Arms are the full metric set plus one per metric removed. The sweep owns arm
 definition, per-arm census caching and the table -- nothing else. Every score
 comes from :func:`injection_test.run` under the heldout design, so no fit,
 target selection or borrowing rule lives here; a second implementation of
 those is exactly what this module exists to avoid.
 
-Injection is identical across arms by construction: sizing uses the SHIPPED
+Injection is identical across arms by construction: sizing uses the FULL
 metric set whatever the arm scores, and the rng key carries no arm, so the
 same (player, scorer, mechanism, severity) draws the same counts everywhere.
 Only the scoring differs, which is the point of an ablation.
@@ -29,7 +29,7 @@ SEVERITIES = injection_test.SEVERITIES
 
 
 def arms(metrics: list[str] | None = None) -> dict[str, list[str]]:
-    """The shipped feature set, then each metric dropped in turn.
+    """The full feature set, then each metric dropped in turn.
 
     Cross-arm RATES are not comparable: a dropped metric lowers d by one, so
     the forest's 2**d borrow target halves and the fit becomes ~1.9x more

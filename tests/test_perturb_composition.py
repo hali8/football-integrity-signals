@@ -349,7 +349,7 @@ def test_target_selection_follows_the_feature_set():
 
     The same player under two censuses -- as score_all would produce with and
     without a z-dominating metric -- must select different matches for the
-    multivariate scorer while the shipped rule's target stays put. One shared
+    multivariate scorer while max|z|'s target stays put. One shared
     target would hand the selecting scorer its hardest case and every other
     scorer an easier-than-typical row.
     """
@@ -365,16 +365,16 @@ def test_target_selection_follows_the_feature_set():
             "player_id": [1] * 5 + [2] * 3,
             "match_id": [1, 2, 3, 4, 5, 1, 2, 3],
             "mahalanobis": [5.0, 4.0, 3.0, 2.0, 1.0, np.nan, np.nan, np.nan],
-            "mahalanobis_z": [5.0, 4.0, 3.0, 2.0, 1.0, np.nan, np.nan, np.nan],
+            "mahalanobis_res": [5.0, 4.0, 3.0, 2.0, 1.0, np.nan, np.nan, np.nan],
         }
     )
     reduced = full.assign(
         mahalanobis=[1.0, 5.0, 2.0, 4.0, 3.0, np.nan, np.nan, np.nan],
-        mahalanobis_z=[1.0, 5.0, 2.0, 4.0, 3.0, np.nan, np.nan, np.nan],
+        mahalanobis_res=[1.0, 5.0, 2.0, 4.0, 3.0, np.nan, np.nan, np.nan],
     )
     with_metric = injection_test.select_targets(scored, full)
     without_metric = injection_test.select_targets(scored, reduced)
-    # The shipped rule's median match is 3 either way.
+    # max|z|'s median match is 3 either way.
     assert (1, 3, "max") in with_metric and (1, 3, "max") in without_metric
     # The multivariate scorer's median match moves with its scores.
     assert (1, 3, "mahalanobis") in with_metric

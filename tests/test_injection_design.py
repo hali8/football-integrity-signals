@@ -50,7 +50,7 @@ def _census(rows: int = 12, players: int = 6) -> pd.DataFrame:
     )
     for column in (
         "mahalanobis",
-        "mahalanobis_z",
+        "mahalanobis_res",
         "forest",
         "forest_norm",
         "forest_own_fraction",
@@ -121,13 +121,7 @@ def test_production_bars_accepts_a_census_built_without_forests():
     census = _census()
     without = census[[c for c in census.columns if not c.startswith("forest")]]
     bars = heldout.production_bars(_scored(census), without, 0.01)
-    assert set(bars) == {
-        "max",
-        "max_ungated",
-        "max_delivered",
-        "mahalanobis",
-        "mahalanobis_z",
-    }
+    assert set(bars) == {"max", "mahalanobis", "mahalanobis_res"}
 
 
 def test_run_names_the_remedy_when_the_census_lacks_forests():
@@ -220,55 +214,24 @@ def test_fingerprint_round_trips_through_parquet_metadata(tmp_path):
     pd.testing.assert_frame_equal(reloaded, census)
 
 
-def test_delivered_rate_comes_from_the_clean_population(mart):
-    """The asterisk must fire on the gate's ceiling, not on target selection.
-
-    Injected rows are median-selected and fire the sigma gate far less often
-    than the population (1.5% against 4.9%), so a delivered rate computed over
-    result rows measures selection and would asterisk every row, including the
-    1% rows the rule reaches perfectly well.
-    """
+def test_the_bar_delivers_its_nominal_rate(mart):
+    """A bar claims to flag the rate on its label, so assert THAT rather than an
+    ordering -- a bar too high or too low can still sit correctly relative to
+    another, and a rate mix-up would read as a plausible percentage."""
     frame = baseline.prepare(mart)
     scored, _ = baseline.residuals(frame)
     scored = scored[scored["is_scoreable"]]
-    census = scored.assign(mahalanobis=0.0, mahalanobis_z=0.0)
-
-    at_one = heldout.production_bars(scored, census, 0.01)["max_delivered"]
-    at_five = heldout.production_bars(scored, census, 0.05)["max_delivered"]
-    assert at_one == pytest.approx(0.01, abs=1e-3), "1% is reachable, so no asterisk"
-    assert at_five < 0.05, "5% is above the gate ceiling, so it must asterisk"
-
-
-def test_ungated_bar_is_not_the_gated_one(mart):
-    """The gated bar is LOWER, because the gate removes rows after the cut.
-    Inheriting it for the ungated tally would look right and be wrong."""
-    frame = baseline.prepare(mart)
-    scored, _ = baseline.residuals(frame)
-    scored = scored[scored["is_scoreable"]]
-    bars = heldout.production_bars(scored, scored.assign(mahalanobis=0.0, mahalanobis_z=0.0), 0.01)
-    assert bars["max"] < bars["max_ungated"]
-
-
-def test_ungated_bar_delivers_its_nominal_rate(mart):
-    """Ordering is the weak property: a bar that is too high or too low still
-    sits above the gated one. What the tally claims is that the bar flags the
-    rate on its label, so assert THAT -- otherwise a joint-bar leak reads as a
-    plausible percentage that a human has to catch."""
-    frame = baseline.prepare(mart)
-    scored, _ = baseline.residuals(frame)
-    scored = scored[scored["is_scoreable"]]
-    census = scored.assign(mahalanobis=0.0, mahalanobis_z=0.0)
+    census = scored.assign(mahalanobis=0.0, mahalanobis_res=0.0)
     top = scored["max_abs_z"].to_numpy()
 
     one = heldout.production_bars(scored, census, 0.01)
     five = heldout.production_bars(scored, census, 0.05)
     for bars, rate in ((one, 0.01), (five, 0.05)):
-        delivered = float((top >= bars["max_ungated"]).mean())
+        delivered = float((top >= bars["max"]).mean())
         assert delivered == pytest.approx(rate, abs=5e-4), (rate, delivered)
 
-    # The two rates must be two rates. A 5% arm silently inheriting the 1%
-    # bar would satisfy every ordering check and print two identical rows.
-    assert five["max_ungated"] < one["max_ungated"]
+    # Two rates must be two bars. A 5% arm silently inheriting the 1% bar would
+    # satisfy every ordering check and print two identical rows.
     assert five["max"] < one["max"]
 
 
@@ -464,27 +427,43 @@ def test_auc_does_not_move_with_the_bar():
     """AUC is threshold-free. If it moved with the bar it would be reported
     per rate, and two identical columns would read as agreement between
     thresholds rather than as one number printed twice."""
-    reference = {"mahalanobis": np.array([0.0, 1.0, 2.0, 9.2])}
     cells = _cells()
-    tight = injection_test.cell_statistics(cells, {"mahalanobis": 9.0}, reference=reference)
-    loose = injection_test.cell_statistics(cells, {"mahalanobis": 0.5}, reference=reference)
+    tight = injection_test.cell_statistics(cells, {"mahalanobis": 9.0})
+    loose = injection_test.cell_statistics(cells, {"mahalanobis": 0.5})
     assert tight.iloc[0]["auc"] == pytest.approx(loose.iloc[0]["auc"])
     assert tight.iloc[0]["recovery"] != loose.iloc[0]["recovery"], "the bar must matter"
 
 
-def test_reference_population_is_the_census_not_the_results():
-    """A results-frame reference inflates every AUC and is invisible in the
-    output -- nothing in the table shows what it compared against."""
-    census = _census()
-    scored = _scored(census)
-    reference = injection_test.reference_scores(scored, census)
-    assert set(reference) >= {"max", "max_ungated", "mahalanobis", "mahalanobis_z"}
-    for name in ("mahalanobis", "forest", "forest_res"):
-        assert len(reference[name]) == len(census), name
-    np.testing.assert_array_equal(reference["mahalanobis"], census["mahalanobis"].to_numpy())
-    # The gated reference masks below-gate rows to -inf rather than dropping
-    # them: they are real rows the rule declines to flag.
-    assert np.isneginf(reference["max"]).any()
+def test_auc_is_paired_so_every_floor_is_exactly_one_half():
+    """AUC compares each row against its OWN clean score, not against the
+    population. A population reference gives every scorer a different no-skill
+    floor -- 0.483 to 0.518 measured -- because targets are median-selected, and
+    that makes the scorers incomparable. Paired, the selection cancels: with
+    nothing injected the two sides are the same multiset, so P(a>b) = P(b>a) and
+    ties count half, putting the floor at exactly 0.5 whatever the scores look
+    like."""
+    null = _cells()
+    null["after"] = null["clean"]
+    stats = injection_test.cell_statistics(null, {"mahalanobis": 5.0})
+    assert stats.iloc[0]["auc"] == pytest.approx(0.5, abs=1e-12)
+
+    # Skewed and degenerate distributions must not move it either.
+    rng = np.random.default_rng(0)
+    for values in (
+        rng.lognormal(size=500),
+        np.repeat(3.0, 500),
+        np.where(rng.random(500) < 0.5, -np.inf, rng.normal(size=500)),
+    ):
+        assert injection_test._auc(values, values.copy()) == pytest.approx(0.5, abs=1e-12)
+
+    # A row with no clean score has no baseline to move from: out of scope,
+    # not a miss. Counting it would drag the floor below 0.5.
+    blind = _cells()
+    blind["after"] = blind["clean"]
+    blind.loc[blind.index[0], "clean"] = np.nan
+    assert injection_test.cell_statistics(blind, {"mahalanobis": 5.0}).iloc[0][
+        "auc"
+    ] == pytest.approx(0.5, abs=1e-12)
 
 
 def test_clip_unit_records_that_the_dose_was_truncated():
@@ -498,9 +477,9 @@ def test_clip_unit_records_that_the_dose_was_truncated():
 
 
 def test_target_choices_separates_a_scorers_own_pick_from_the_fallback():
-    """select_targets hands a scorer the shipped rule's row when it cannot
+    """select_targets hands a scorer max|z|'s row when it cannot
     score a player. The agreement matrix must be able to tell that apart, or a
-    blind scorer reads as perfectly aligned with the shipped rule."""
+    blind scorer reads as perfectly aligned with max|z|."""
     census = _census()
     scored = _scored(census)
     blind = census["player_id"].unique()[:2]
@@ -529,10 +508,10 @@ def test_report_reports_auc_once_and_recovery_per_rate():
     body = [ln for ln in text.splitlines() if ln.startswith("| **mahalanobis**")]
     assert len(body) == 1
     # The two recovery cells must differ: the loose bar recovers a row the
-    # tight one does not. No reference was passed, so auc has to say so rather
-    # than print "nan", which reads as a defect.
+    # tight one does not. AUC is paired, so it is always computable and must
+    # never render as "nan", which reads as a defect.
     assert "25.0%" in body[0] and "50.0%" in body[0], body[0]
-    assert "nan" not in body[0] and "| n/a |" in body[0]
+    assert "nan" not in body[0], body[0]
 
 
 def test_matrix_cell_says_nothing_rather_than_zero_when_a_scorer_caught_none():
@@ -676,13 +655,3 @@ def test_injection_never_moves_a_player_exposure():
     for name, mechanism in injection_test.MECHANISMS.items():
         updates = mechanism(row, sds, 2.0, rng)
         assert not (set(updates) & exposure), f"{name} moved the player's exposure"
-
-
-def test_gated_score_reproduces_the_shipped_flag_at_any_bar():
-    """One bar-independent ranking: thresholding it IS the shipped rule."""
-    z = np.array([5.0, 4.0, 3.0, 2.0])
-    sigma = np.array([4.0, 1.0, 4.0, 4.0])
-    masked = injection_test.gated_score(z, sigma, 3.0)
-    for bar in (2.5, 3.5, 4.5):
-        expected = (z >= bar) & (np.abs(sigma) >= 3.0)
-        assert np.array_equal(masked >= bar, expected), bar

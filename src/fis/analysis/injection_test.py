@@ -533,7 +533,7 @@ FOREST_SCORERS = ("forest", "forest_norm", "forest_res", "forest_res_norm")
 
 #: Scorers compared, each picking its own target row -- raw and residual
 #: space disagree about which match is a player's most typical.
-SCORERS = ("max", "mahalanobis", "mahalanobis_z")
+SCORERS = ("max", "mahalanobis", "mahalanobis_res")
 
 
 def select_targets(
@@ -542,17 +542,28 @@ def select_targets(
     """One (player, match) per scorer: the match closest to his median CLEAN
     score under that scorer, chosen before anything is perturbed.
 
-    Selection is per scorer AND per feature set -- the census carries scores
+    The player universe is max|z|'s by convention; mahalanobis and forest score
+    every row too. Selection is per scorer AND per feature set -- the census carries scores
     computed under whatever metric set the caller ran. One shared target would
     hand the selecting scorer its hardest case and every other scorer an
     easier-than-typical row. A scorer that cannot score a player is still
-    tested on him -- shipped rule's target, NaN score, counted as a miss -- so
+    tested on him -- max|z|'s target, NaN score, counted as a miss -- so
     narrow coverage is paid for rather than flattered.
     """
     default, choices = target_choices(scored, census, scorers)
     targets = set()
     for scorer in scorers:
         chosen = choices[scorer]
+        blind = [p for p in default if p not in chosen]
+        if blind:
+            # Never silent: the scorer is tested on a row it cannot score, so it
+            # takes a miss it did not earn on the merits.
+            warnings.warn(
+                f"{scorer} cannot score {len(blind)} of {len(default)} players; "
+                "they are tested on max|z|'s row and count as misses, so its "
+                "detection rate is understated",
+                stacklevel=2,
+            )
         for player, match in default.items():
             targets.add((player, chosen.get(player, match), scorer))
     return targets
@@ -561,12 +572,12 @@ def select_targets(
 def target_choices(
     scored: pd.DataFrame, census: pd.DataFrame, scorers: tuple[str, ...] = SCORERS
 ) -> tuple[dict, dict[str, dict]]:
-    """The shipped rule's pick per player, and each scorer's OWN pick.
+    """max|z|'s pick per player, and each scorer's OWN pick.
 
     Kept separate from :func:`select_targets` because the agreement matrix must
     be able to tell a scorer's own choice from the fallback it inherits when it
     cannot score a player. Counting a fallback as agreement would make a thin
-    scorer look most aligned with the shipped rule exactly where it is blind.
+    scorer look most aligned with max|z| exactly where it is blind.
     """
     keys = ["player_id", "match_id"]
     clean_scores = census.merge(scored[keys + ["max_abs_z"]], on=keys, how="left").rename(
@@ -608,7 +619,7 @@ def run(
         ``k`` allocated across them in quadrature against each channel's capacity;
         those rows carry per-DOF achieved columns. ``metrics``
         narrows the multivariate scorers' feature set (the census must have been
-        scored under the same set); injection sizing always uses the shipped set,
+        scored under the same set); injection sizing always uses the full set,
         so the perturbation is identical across feature-set arms.
 
     ``design`` selects the experiment, and the two answer different questions:
@@ -673,7 +684,7 @@ def run(
     target_rows = {(p, m) for p, m, _ in targets}
 
     def score_frame(frame: pd.DataFrame, wanted: set | None = None) -> pd.DataFrame:
-        """Every row scored through the shipped residual path, position
+        """Every row scored through the residual path, position
         reference pinned to the clean frame. The player's own history is left
         contaminated on purpose -- that is what the collateral columns measure.
 
@@ -698,12 +709,11 @@ def run(
             cx = complete[metrics].to_numpy(dtype=float)
             cz = complete[zcols].to_numpy(dtype=float)
             cids = complete["match_id"].to_numpy()
-            for x, zrow, mid, top, gate in zip(
+            for x, zrow, mid, top in zip(
                 g[metrics].to_numpy(dtype=float),
                 g[zcols].to_numpy(dtype=float),
                 g["match_id"].to_numpy(),
                 g["max_abs_z"].to_numpy(),
-                g["sd_from_mean"].to_numpy(),
             ):
                 if wanted is not None and (player_id, mid) not in wanted:
                     continue
@@ -741,9 +751,8 @@ def run(
                     "match_id": mid,
                     "position_code": position,
                     "max": top,
-                    "sigma": gate,
                     "mahalanobis": fit.distance(x),
-                    "mahalanobis_z": zdist,
+                    "mahalanobis_res": zdist,
                 }
                 if forest:
                     _, fraw, fnorm = fit.score(x)
@@ -769,7 +778,7 @@ def run(
         return pd.DataFrame([r for batch in batches for r in batch])
 
     # Every player's spread, computed once from clean data -- always over the
-    # SHIPPED metric set, so the injection does not change with ``metrics``.
+    # FULL metric set, so the injection does not change with ``metrics``.
     spreads = {
         pid: calibration_sds(g.dropna(subset=baseline.METRICS), pos_sds, g["position_code"].iloc[0])
         for pid, g in scored.groupby("player_id")
@@ -922,9 +931,8 @@ def _auc(reference: np.ndarray, hot: np.ndarray) -> float:
     it but the bar is too far out to act on it" -- the distinction that once
     stopped this project reading a noisy detection delta as a gain.
 
-    -inf is a REAL value here (a gated score whose gate did not fire), so only
     NaN is dropped from the reference. A NaN score cannot be flagged, matching
-    flag(), so in the perturbed set it sinks to the bottom rather than being
+    flag(), so in the perturbed set it sinks to -inf rather than being
     discarded, which would flatter the scorer by shrinking its denominator.
     """
     clean = np.sort(reference[~np.isnan(reference)])
@@ -934,18 +942,6 @@ def _auc(reference: np.ndarray, hot: np.ndarray) -> float:
     lo = np.searchsorted(clean, perturbed, side="left")
     hi = np.searchsorted(clean, perturbed, side="right")
     return float(np.mean((lo + hi) / (2 * len(clean))))
-
-
-def gated_score(z: np.ndarray, sigma: np.ndarray, sigma_gate: float) -> np.ndarray:
-    """max|z| masked by the corroboration gate: the shipped rule as a ranking.
-
-    Thresholding this reproduces flag() exactly at any bar, and it carries no
-    bar itself, so ONE ranking serves every workload. Its no-skill floor is
-    NOT 0.5: median-selected targets fire the gate far less often than a
-    random clean row (1.5% against 4.9% here), so it must be read against a
-    clean-target baseline, never against the conventional line.
-    """
-    return np.where(np.abs(sigma) >= sigma_gate, z, -np.inf)
 
 
 def _recovery_se(rate: float, n: int, structural: bool) -> float:
@@ -964,24 +960,14 @@ def _recovery_se(rate: float, n: int, structural: bool) -> float:
     return float(np.sqrt(adjusted * (1.0 - adjusted) / (n + 4.0)))
 
 
-def tallies_for(present: set, bars: dict[str, float]) -> list[tuple[str, str, bool]]:
-    """The report's unique rules: every scorer, plus max|z| WITHOUT the gate.
-
-    The ungated tally is a second reading of rows already scored, never a
-    separate scorer -- it would select identical targets and cost a full extra
-    scoring pass for duplicate numbers.
-    """
-    out = [(s, s, True) for s in SCORERS + FOREST_SCORERS if s in present]
-    if "max" in present and np.isfinite(bars.get("max_ungated", np.nan)):
-        out.insert(1, ("max_ungated", "max", False))
-    return out
+def tallies_for(present: set, bars: dict[str, float]) -> list[str]:
+    """The scorers to tally, in report order."""
+    return [s for s in SCORERS + FOREST_SCORERS if s in present]
 
 
 def cell_statistics(
     results: pd.DataFrame,
     bars: dict[str, float],
-    sigma_gate: float = baseline.CORROBORATING_SIGMA,
-    reference: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """One row per (mechanism, severity, tally) -- every number a table needs.
 
@@ -994,15 +980,12 @@ def cell_statistics(
     for name in results["mechanism"].unique():
         for k in sorted(results.loc[results.mechanism == name, "severity"].unique()):
             block = results[(results.mechanism == name) & (results.severity == k)]
-            for tally, scorer, gated in tallies_for(present, bars):
-                r = block[block.scorer == scorer]
+            for tally in tallies_for(present, bars):
+                r = block[block.scorer == tally]
                 if r.empty:
                     continue
                 cut = bars[tally]
                 hit, was = r["after"] >= cut, r["clean"] >= cut
-                if scorer == "max" and gated:
-                    hit = hit & (r["sigma_after"].abs() >= sigma_gate)
-                    was = was & (r["sigma_clean"].abs() >= sigma_gate)
                 t, o = r.is_target, ~r.is_target
                 n = int(t.sum())
                 # Recovery is crossing the bar BECAUSE OF the injection. A row
@@ -1040,14 +1023,20 @@ def cell_statistics(
                         equal_nan=True,
                     )
                 )
+                # PAIRED against the same rows' own clean scores, not against
+                # the population. Targets are median-selected, so a population
+                # reference gives each scorer a different no-skill floor
+                # (0.483 to 0.518 measured) and makes them incomparable. Paired,
+                # selection cancels: at k=0 every floor is exactly 0.5.
+                # Rows the scorer could not score clean have no baseline to move
+                # from, so they are out of scope rather than misses.
                 auc = np.nan
-                if reference is not None and tally in reference:
-                    hot = r.loc[t, "after"].to_numpy(dtype=float)
-                    if scorer == "max" and gated:
-                        hot = gated_score(
-                            hot, r.loc[t, "sigma_after"].to_numpy(dtype=float), sigma_gate
-                        )
-                    auc = _auc(reference[tally], hot)
+                paired = t & r["clean"].notna()
+                if paired.any():
+                    auc = _auc(
+                        r.loc[paired, "clean"].to_numpy(dtype=float),
+                        r.loc[paired, "after"].to_numpy(dtype=float),
+                    )
                 measurable = bool(o.any()) and r.loc[o, "after"].notna().sum() > 0
                 middle = spread = np.nan
                 stirred = 0
@@ -1132,49 +1121,16 @@ def clipped_note(block: pd.DataFrame) -> str:
     return f"  clipped {share:.1%}" if share else ""
 
 
-def reference_scores(
-    scored: pd.DataFrame,
-    census: pd.DataFrame,
-    sigma_gate: float = baseline.CORROBORATING_SIGMA,
-) -> dict[str, np.ndarray]:
-    """Clean-population score per tally -- the AUC's reference set.
-
-    The CENSUS, never the results frame. Targets are median-selected and so
-    unrepresentative by construction; a results-frame reference would inflate
-    every AUC and be invisible in the output, since nothing in the table shows
-    what it was compared against.
-    """
-    flagged = baseline.flag(scored)
-    top = flagged["max_abs_z"].to_numpy(dtype=float)
-    out = {
-        "max": gated_score(top, flagged["sd_from_mean"].to_numpy(dtype=float), sigma_gate),
-        "max_ungated": top,
-    }
-    for name in SCORERS + FOREST_SCORERS:
-        if name != "max" and name in census:
-            out[name] = census[name].to_numpy(dtype=float)
-    return out
-
-
 def census_rates(
     scored: pd.DataFrame,
     census: pd.DataFrame,
     bars: dict[str, float],
     rate: float = baseline.DEFAULT_FLAG_RATE,
-    sigma_gate: float = baseline.CORROBORATING_SIGMA,
 ) -> str:
     """Share of the CENSUS each bar actually flags, which must equal ``rate``
     -- a bug check, and the anchor every other rate is read against."""
     flagged = baseline.flag(scored, rate)
     parts = [f"max {flagged['is_flagged'].mean():.4%}"]
-    # The ungated bar applied to the clean census with NO gate must flag its
-    # nominal rate. This is what catches the leak that would look right and be
-    # wrong: reusing bars["max"] (the JOINT threshold, 3.310) for the ungated
-    # tally instead of its own quantile (3.466) prints 1.339% here against a
-    # 1.000% target, and a rate mix-up prints 1% where 5% is claimed.
-    if np.isfinite(bars.get("max_ungated", np.nan)):
-        z = flagged["max_abs_z"].dropna()
-        parts.append(f"max_ungated {(z >= bars['max_ungated']).mean():.4%}")
     for name in SCORERS + FOREST_SCORERS:
         if name == "max" or name not in census:
             continue
@@ -1189,20 +1145,11 @@ def census_rates(
 def summary_persistent(
     results: pd.DataFrame,
     bars: dict[str, float],
-    sigma_gate: float = baseline.CORROBORATING_SIGMA,
     rate: float = baseline.DEFAULT_FLAG_RATE,
-    reference: dict[str, np.ndarray] | None = None,
 ) -> str:
-    """Detection on the fixed match, and what it did to the player's others.
-
-    The shipped rule is reported TWICE over the same rows: gated (as deployed)
-    and ungated (max|z| alone). Their difference is the corroboration gate's
-    cost, which is the most decision-relevant number either produces, and it
-    is free -- both scores are already recorded, the gate only being applied
-    at tally time.
-    """
+    """Detection on the fixed match, and what it did to the player's others."""
     lines = []
-    stats = cell_statistics(results, bars, sigma_gate, reference)
+    stats = cell_statistics(results, bars)
     for name in results["mechanism"].unique():
         for k in sorted(results.loc[results.mechanism == name, "severity"].unique()):
             block = results[(results.mechanism == name) & (results.severity == k)]
@@ -1267,14 +1214,6 @@ def summary_persistent(
             cells = stats[(stats.mechanism == name) & (stats.severity == k)]
             for row in cells.itertuples():
                 label = row.tally
-                if label == "max":
-                    # The gate is a hard ceiling: it fires on a fixed share of
-                    # rows, so past that share no z bar reaches the requested
-                    # rate. Flag it from the comparison, so a future estimator
-                    # that lifts the ceiling drops the asterisk on its own.
-                    delivered = bars.get("max_delivered", np.nan)
-                    if np.isfinite(delivered) and delivered + 1e-9 < rate:
-                        label = f"max*({delivered:.2%} del)"
                 auc = f" | auc {row.auc:.3f}" if np.isfinite(row.auc) else ""
                 dosed = (
                     f" -> {row.recovery_dosed:.1%}+-{row.recovery_dosed_se:.1%}"
@@ -1324,7 +1263,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=list(baseline.METRICS),
         action="append",
         help="remove a metric from the multivariate feature set; repeatable. "
-        "The shipped rule and the injection keep the full set; census, "
+        "max|z| and the injection keep the full set; census, "
         "bars and target selection follow the reduced one.",
     )
     parser.add_argument(

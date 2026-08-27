@@ -50,8 +50,6 @@ PROPORTIONS = {
     ),
 }
 
-#: Sigma corroboration for flags: MAD can collapse on repeated values, sigma cannot.
-CORROBORATING_SIGMA = 3.0
 #: crosses is deliberately absent -- see EXCLUDED_METRICS.
 VOLUME_METRICS = ["passes", "defensive_actions", "touches_in_defensive_third"]
 
@@ -453,21 +451,6 @@ def residuals(
     return frame, counts
 
 
-def joint_threshold(scores: pd.Series, corroborated: pd.Series, rate: float) -> float:
-    """Score threshold such that (score >= t) & corroborated flags ``rate`` of rows.
-
-    Set within the corroborated rows, so the joint rule delivers the configured
-    share; set on the score alone it would only be an upper bound. NaN when
-    nothing can be flagged.
-    """
-    scoreable = scores.notna()
-    gated = scores[corroborated & scoreable].sort_values(ascending=False)
-    target = int(round(rate * int(scoreable.sum())))
-    if target and len(gated):
-        return float(gated.iloc[min(target, len(gated)) - 1])
-    return float("nan")
-
-
 def flag(frame: pd.DataFrame, rate: float = DEFAULT_FLAG_RATE) -> pd.DataFrame:
     """Flag ``rate`` of scoreable rows: highest ``max_abs_z``, sigma-corroborated."""
     if not 0 < rate < 1:
@@ -477,16 +460,13 @@ def flag(frame: pd.DataFrame, rate: float = DEFAULT_FLAG_RATE) -> pd.DataFrame:
     z_columns = [f"z_{m}" for m in METRICS]
     driver = frame[z_columns].abs().idxmax(axis=1).str.removeprefix("z_")
     frame["driving_metric"] = driver
-    frame["sd_from_mean"] = [
-        frame.at[i, f"sigma_{m}"] if isinstance(m, str) else np.nan for i, m in driver.items()
-    ]
     frame["baseline_weight"] = [
         frame.at[i, f"weight_{m}"] if isinstance(m, str) else np.nan for i, m in driver.items()
     ]
-    corroborated = frame["sd_from_mean"].abs() >= CORROBORATING_SIGMA
-    threshold = joint_threshold(frame["max_abs_z"], corroborated, rate)
+    scoreable = frame["max_abs_z"].dropna()
+    threshold = float(np.nanquantile(scoreable, 1 - rate)) if len(scoreable) else float("nan")
     frame["flag_threshold"] = threshold
-    frame["is_flagged"] = (frame["max_abs_z"] >= threshold) & corroborated
+    frame["is_flagged"] = frame["max_abs_z"] >= threshold
     return frame
 
 
@@ -498,7 +478,6 @@ def evidence(frame: pd.DataFrame) -> pd.DataFrame:
         "max_abs_z",
         "mean_abs_z",
         "driving_metric",
-        "sd_from_mean",
         "flag_threshold",
         "is_flagged",
     ]
@@ -566,7 +545,6 @@ def main(argv: list[str] | None = None) -> int:
         "metric",
         "observed",
         "max_abs_z",
-        "sd_from_mean",
         "is_flagged",
     ]
     print(f"\nTop {args.top} by |z|:")

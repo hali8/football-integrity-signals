@@ -319,7 +319,7 @@ class _Fit:
         return self.distance(x), raw, (raw - centre) / spread if spread else np.nan
 
 
-#: The shipped residual columns, from baseline.residuals -- reimplementing them
+#: The residual columns, from baseline.residuals -- reimplementing them
 #: would be a second convention to keep in step with the first.
 def residual_columns(metrics: list[str]) -> list[str]:
     return [f"z_{m}" for m in metrics]
@@ -397,12 +397,14 @@ def score_all(
             mdist = fit.distance(x)
             # Same question as max|z|, combined by covariance instead of a
             # maximum; picks its own target row downstream.
-            zdist = np.nan
             zresid = zresid_norm = zofrac = np.nan
             ztrain = complete_z[complete_ids != match_id]
             ztrain = ztrain[~np.isnan(ztrain).any(axis=1)]
+            # Falls back to the position fit exactly as raw space does above;
+            # without it a player with too few complete z-rows scored NaN.
+            pool_z = position_z.get(position)
+            zfit = pool_z
             if len(ztrain) >= 2:
-                pool_z = position_z.get(position)
                 zfit = _Fit(
                     ztrain,
                     target=pool_z.cov if pool_z is not None else None,
@@ -410,16 +412,14 @@ def score_all(
                     pool=position_z_rows.get(position),
                     seed=borrow_seed(pid),
                 )
-                zdist = zfit.distance(zrow)
-                # The forest's residual-space twin. Borrowing is cheaper to
-                # justify here than in raw space: z is already centred and
-                # scaled per player, so a pooled row is on the same footing.
-                if forest:
-                    _, zresid, zresid_norm = zfit.score(zrow)
-                    # Provenance for the residual fit specifically: reporting
-                    # the raw fit's share beside a residual-space score would
-                    # mislabel exactly the flags most likely to be acted on.
-                    zofrac = zfit.own_fraction(int((~np.isnan(zrow)).sum()))
+            zdist = zfit.distance(zrow) if zfit is not None else np.nan
+            # z is already centred and scaled per player, so a borrowed pool row
+            # is on the same footing -- cheaper to justify than in raw space.
+            if forest and zfit is not None:
+                _, zresid, zresid_norm = zfit.score(zrow)
+                # The residual fit's own share: reporting the raw fit's beside a
+                # residual score would mislabel the flags most likely to be acted on.
+                zofrac = zfit.own_fraction(int((~np.isnan(zrow)).sum()))
             # Forest off by default: one fit per row is the entire runtime.
             fscore = fz = ofrac = np.nan
             if forest:
@@ -463,7 +463,7 @@ def score_all(
             "position_code",
             "fit_source",
             "mahalanobis",
-            "mahalanobis_z",
+            "mahalanobis_res",
             "forest",
             "forest_norm",
             "forest_own_fraction",
@@ -496,18 +496,7 @@ def production_bars(
         )
     flagged = baseline.flag(scored, rate)
     bars = {"max": float(flagged["flag_threshold"].iloc[0])}
-    # The same statistic WITHOUT the corroboration gate, so the gate's
-    # contribution is measured rather than assumed. Derived from the scored
-    # population every time -- the gated bar is LOWER (the gate removes rows
-    # after the cut), so inheriting it here would look right and be wrong.
-    ungated = flagged["max_abs_z"].dropna()
-    bars["max_ungated"] = float(np.nanquantile(ungated, 1 - rate)) if len(ungated) else np.nan
-    # What the gated rule actually delivers on the CLEAN population, recorded
-    # where the bar is set. Not derivable downstream: injected result rows are
-    # median-selected and fire the gate far less than the population, so a
-    # rate computed over them measures target selection, not the ceiling.
-    bars["max_delivered"] = float(flagged["is_flagged"].mean())
-    for name in ("mahalanobis", "mahalanobis_z", *forest_cols):
+    for name in ("mahalanobis", "mahalanobis_res", *forest_cols):
         if name not in census:
             if name in forest_cols:
                 continue

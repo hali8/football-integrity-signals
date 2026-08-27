@@ -1,6 +1,6 @@
 """The report tables: detection at two thresholds, and scorer agreement.
 
-Two detection tables -- one per scorer family, the shipped rule in both -- and
+Two detection tables -- one per scorer family, max|z| in both -- and
 the Phase 2c agreement matrices. Every number comes from
 :func:`injection_test.cell_statistics`, so the tables and the sweep's text
 summary cannot disagree; a second implementation of the same statistic is what
@@ -21,15 +21,31 @@ import pandas as pd
 from fis import paths
 from fis.analysis import baseline, heldout, injection_test
 
-#: Both tables carry the shipped rule and its ungated twin, so the gate's cost
-#: is readable in each without cross-referencing the other.
-SHARED = ("max", "max_ungated")
+#: Categorical slots 1-4 of the reference dataviz palette, in its validated
+#: adjacent order; a scorer keeps its hue in every chart.
+SERIES_COLOR = {
+    "max": "#2a78d6",
+    "mahalanobis": "#eb6834",
+    "mahalanobis_res": "#eb6834",
+    "forest": "#1baf7a",
+    "forest_res": "#1baf7a",
+    "forest_norm": "#eda100",
+    "forest_res_norm": "#eda100",
+}
+#: Blue sequential ramp (steps 100-550) for the agreement heatmaps.
+SEQ_RAMP = ("#cde2fb", "#86b6ef", "#3987e5", "#1c5cab")
+_INK, _INK2, _SURFACE, _GRID = "#0b0b0b", "#52514e", "#fcfcfb", "#e6e5e2"
+
+
+#: max|z| is in both tables: the simplest scorer, so the baseline the others
+#: must beat. Residual-space by construction, so its place in DIRECT is a choice.
+SHARED = ("max",)
 #: Both forest readings appear: the raw isolation score and the score
 #: normalised against its own fit's training rows. They rank the same fit but
 #: not identically, and the normalised one is the only form comparable across
 #: players whose fits borrowed different amounts.
 DIRECT = SHARED + ("mahalanobis", "forest", "forest_norm")
-RESIDUAL = SHARED + ("mahalanobis_z", "forest_res", "forest_res_norm")
+RESIDUAL = SHARED + ("mahalanobis_res", "forest_res", "forest_res_norm")
 
 #: Every unique rule, in table order -- what the agreement matrices span.
 EVERY_TALLY = DIRECT + tuple(s for s in RESIDUAL if s not in DIRECT)
@@ -43,31 +59,72 @@ RATES = (0.01, 0.05)
 MIN_MATRIX_PLAYERS = 10
 
 
+#: Stamped into the rendered markdown so staleness is detectable without the
+#: warehouse: the ANALYSIS hash covers the code that produced the results, the
+#: RENDER hash only this module. They fail differently -- see freshness().
+ANALYSIS_STAMP = "fis-analysis"
+RENDER_STAMP = "fis-render"
+STALE_BANNER = (
+    "> **⚠ These numbers are stale.** They do not describe the current detector. "
+    "Regenerate with `fis-report --forest --jobs -1`.\n"
+)
+
+
+def _stamps() -> dict[str, str]:
+    """Current hashes for the two things a report depends on."""
+    return {
+        ANALYSIS_STAMP: heldout._code_fingerprint((injection_test,)),
+        RENDER_STAMP: heldout._code_fingerprint((sys.modules[__name__],)),
+    }
+
+
+def freshness(text: str) -> tuple[str, str]:
+    """Classify a rendered report against the code as it stands now.
+
+    Returns (state, detail) where state is fresh | render | analysis | unknown.
+    Split because the two cost wildly different amounts to fix: a render is
+    seconds against the saved results, an analysis change invalidates those
+    results and needs the whole campaign again.
+    """
+    now = _stamps()
+    found = {
+        k: v
+        for k, v in (
+            line.removeprefix("<!-- ").removesuffix(" -->").split("=", 1)
+            for line in text.splitlines()
+            if line.startswith("<!-- fis-")
+        )
+    }
+    if not found:
+        return "unknown", "no stamp: rendered before freshness tracking existed"
+    if found.get(ANALYSIS_STAMP) != now[ANALYSIS_STAMP]:
+        return "analysis", (
+            "the estimator or injection code changed, so the saved results no "
+            "longer describe it -- a full campaign re-run is needed"
+        )
+    if found.get(RENDER_STAMP) != now[RENDER_STAMP]:
+        return "render", "only the renderer changed -- re-render from the saved results"
+    return "fresh", "matches the code as it stands"
+
+
 def _fold(title: str, body: str) -> str:
-    """A GitHub-collapsible section; blank lines let markdown render inside."""
-    return f"\n<details>\n<summary><b>{title}</b></summary>\n{body}\n\n</details>"
+    """A GitHub-collapsible section. The blank line after </summary> is what
+    makes GitHub render the body as markdown; without it a table is prose."""
+    return f"\n<details>\n<summary><b>{title}</b></summary>\n\n{body.lstrip(chr(10))}\n\n</details>"
 
 
 def _context(scored: pd.DataFrame, rates: tuple[float, ...], headline) -> str:
-    """Three sentences of provenance, so the first grid is not the first thing
-    a reader arriving from the README sees."""
+    """Provenance, so the first grid is not the first thing a reader sees."""
     from datetime import date
 
     mechanism, severity = headline
-    return "\n".join(
-        [
-            f"Generated by `fis-report` on {date.today().isoformat()}, from the "
-            "leave-one-out census and the sigma-calibrated injection harness.",
-            f"Population: {len(scored):,} scoreable player-matches / "
-            f"{scored['player_id'].nunique():,} players; every number below is "
-            "derived from this run at render time, never hardcoded.",
-            f"Config: severity ladder k = {injection_test.SEVERITIES}, detection "
-            "bars at "
-            + " and ".join(f"{r:.0%}" for r in sorted(rates))
-            + f" flag rates, agreement matrices keyed on `{mechanism}:{severity:g}`. "
-            "Tables re-render from the saved results parquet without re-running "
-            "the analysis.",
-        ]
+    bars = " and ".join(f"{r:.0%}" for r in sorted(rates))
+    return (
+        f"`fis-report`, {date.today().isoformat()}. "
+        f"{len(scored):,} player-matches / {scored['player_id'].nunique():,} players; "
+        f"severity ladder k = {injection_test.SEVERITIES}; bars at {bars}; "
+        f"agreement matrices on `{mechanism}:{severity:g}`. "
+        "Every number is derived at render time, never hardcoded."
     )
 
 
@@ -90,8 +147,8 @@ def headline_summary(stats: pd.DataFrame, low: float, headline) -> str:
         "|---|---:|---:|",
     ]
     for tally, label in (
-        ("max", "max\\|z\\| (shipped, gated)"),
-        ("mahalanobis_z", "mahalanobis_z"),
+        ("max", "max\\|z\\|"),
+        ("mahalanobis_res", "mahalanobis_res"),
         ("forest", "forest"),
         ("forest_res", "forest_res"),
     ):
@@ -104,26 +161,192 @@ def headline_summary(stats: pd.DataFrame, low: float, headline) -> str:
 
         table.append(f"| {label} | {cell(a)} | {cell(b)} |")
     tail = (
-        "The forests are the weakest scorers against a single-metric "
-        "manipulation and the strongest against the coordinated one."
+        "The forests are weakest against a single metric and strongest against the coordinated one."
     )
-    forest, shipped = pick("forest", mechanism), pick("max", mechanism)
-    if forest is not None and shipped is not None and shipped.recovery:
+    forest, univariate = pick("forest", mechanism), pick("max", mechanism)
+    if forest is not None and univariate is not None and univariate.recovery:
         tail += (
             f" On the coordinated injection the forest recovers "
-            f"**{forest.recovery / shipped.recovery:.1f}× the shipped rule**."
+            f"**{forest.recovery / univariate.recovery:.1f}× max|z|**."
         )
     return "\n".join(
         [
             "\n## Headline\n",
-            "**The scorer ordering flips between conditions** — recovery at the "
-            f"shipped {low:.0%} bar, k={severity:g}:",
+            "**The best scorer depends on the manipulation** — recovery at the "
+            f"{low:.0%} bar, k={severity:g}:",
             "",
             *table,
             "",
             tail,
         ]
     )
+
+
+def _save_svg(fig, path: Path) -> None:
+    """Deterministic SVG: no timestamp, fixed hash salt, text kept as text --
+    a re-render of unchanged numbers must not produce a diff."""
+    import matplotlib
+
+    matplotlib.rcParams["svg.hashsalt"] = "fis"
+    matplotlib.rcParams["svg.fonttype"] = "none"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, format="svg", metadata={"Date": None}, bbox_inches="tight")
+
+
+def _styled(ax) -> None:
+    ax.set_facecolor(_SURFACE)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(_GRID)
+    ax.grid(axis="y", color=_GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.tick_params(colors=_INK2, labelsize=9)
+
+
+def _plot_recovery(
+    stats: pd.DataFrame, tallies: tuple[str, ...], mechanisms: list[str], path: Path
+) -> None:
+    """Recovery against dose, one panel per mechanism, one line per scorer."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(
+        1,
+        len(mechanisms),
+        figsize=(4.4 * len(mechanisms), 3.4),
+        sharey=True,
+        facecolor=_SURFACE,
+    )
+    axes = [axes] if len(mechanisms) == 1 else list(axes)
+    span = max(stats["recovery"].max() * 100, 1.0)
+    for ax, mech in zip(axes, mechanisms):
+        _styled(ax)
+        rows = stats[stats.mechanism == mech]
+        ends = []
+        for tally in tallies:
+            r = rows[rows.tally == tally].sort_values("severity")
+            if r.empty:
+                continue
+            ax.errorbar(
+                r["severity"],
+                r["recovery"] * 100,
+                yerr=r["recovery_se"] * 100,
+                color=SERIES_COLOR[tally],
+                linewidth=2,
+                marker="o",
+                markersize=6,
+                capsize=2,
+                elinewidth=1,
+                label=tally,
+            )
+            ends.append((r.iloc[-1]["severity"], r.iloc[-1]["recovery"] * 100, tally))
+        # Dodge the end labels apart: lines that finish together otherwise
+        # overprint their names.
+        gap = span * 0.055
+        placed = []
+        for x, y, tally in sorted(ends, key=lambda e: e[1]):
+            slot = y if not placed else max(y, placed[-1] + gap)
+            placed.append(slot)
+            ax.annotate(
+                tally,
+                (x, slot),
+                textcoords="offset points",
+                xytext=(6, -3),
+                fontsize=8,
+                color=_INK2,
+            )
+        ax.set_title(mech, fontsize=10, color=_INK)
+        ax.set_xlabel("severity k", fontsize=9, color=_INK2)
+        ax.margins(x=0.18)
+    axes[0].set_ylabel("targets recovered (%)", fontsize=9, color=_INK2)
+    axes[0].legend(frameon=False, fontsize=8, labelcolor=_INK2)
+    _save_svg(fig, path)
+    plt.close(fig)
+
+
+def _plot_matrix(labels: list[str], values, texts, title: str, path: Path) -> None:
+    """Agreement matrix as a shaded grid, the table's exact numbers in the
+    boxes -- it replaces the raw grid rather than accompanying it."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+
+    cmap = LinearSegmentedColormap.from_list("fis_seq", SEQ_RAMP)
+    n = len(labels)
+    fig, ax = plt.subplots(figsize=(1.2 + 0.8 * n, 1.0 + 0.62 * n), facecolor=_SURFACE)
+    ax.imshow(values, cmap=cmap, vmin=0, vmax=100)
+    ax.set_xticks(range(n), labels, rotation=45, ha="right", fontsize=8, color=_INK2)
+    ax.set_yticks(range(n), labels, fontsize=8, color=_INK2)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    for i in range(n):
+        for j in range(n):
+            v = values[i][j]
+            ax.text(
+                j,
+                i,
+                texts[i][j],
+                ha="center",
+                va="center",
+                fontsize=7.5,
+                color=_SURFACE if np.isfinite(v) and v > 55 else _INK,
+            )
+    ax.set_title(title, fontsize=10, color=_INK)
+    _save_svg(fig, path)
+    plt.close(fig)
+
+
+def _slug(name: str) -> str:
+    return name.replace("|", "").replace(" ", "_").lower()
+
+
+def detection_section(
+    per_rate: dict[float, pd.DataFrame],
+    tallies: tuple[str, ...],
+    title: str,
+    headline_mechanism: str,
+    plots_dir: Path | None,
+) -> str:
+    """A detection family: default plot, one fold per other comparison, and the
+    raw table folded beneath -- the nearest GitHub gets to a dropdown."""
+    lead = (
+        "max|z| is the simplest scorer, carried in both tables as the baseline "
+        "the others have to beat.\n"
+    )
+    table = _fold("raw table", detection_table(per_rate, tallies, title))
+    if plots_dir is None:
+        return "\n".join([lead, table])
+    stats = per_rate[min(per_rate)]
+
+    def peak(mech: str) -> float:
+        # At the mechanism's OWN top dose: ladders differ (throttle is a
+        # fraction, not a sigma), so a global top-k would drop it entirely.
+        rows = stats[stats.mechanism == mech]
+        r = rows[rows.severity == rows.severity.max()].recovery.max()
+        return float(r) if np.isfinite(r) else -1.0
+
+    ranked = sorted(
+        (m for m in stats.mechanism.unique() if m != headline_mechanism and peak(m) >= 0),
+        key=lambda m: -peak(m),
+    )
+    slug = _slug(title.split()[0])
+    default = [ranked[0], headline_mechanism] if ranked else [headline_mechanism]
+    _plot_recovery(stats, tallies, default, plots_dir / f"{slug}.svg")
+    parts = [
+        lead,
+        f"![recovery against severity, {' and '.join(default)}](plots/{slug}.svg)",
+    ]
+    for mech in ranked[1:]:
+        name = f"{slug}_{_slug(mech)}.svg"
+        _plot_recovery(stats, tallies, [mech], plots_dir / name)
+        parts.append(_fold(mech, f"![recovery against severity, {mech}](plots/{name})"))
+    parts.append(table)
+    return "\n".join(parts)
 
 
 def _pct(value: float, width: int = 5) -> str:
@@ -142,6 +365,8 @@ def detection_table(
     low, high = min(per_rate), max(per_rate)
     base = per_rate[low]
     lines = [
+        "max|z| is the simplest scorer, carried in both tables as the baseline "
+        "the others have to beat.\n",
         f"| scorer | injection | k | delivered | n | dosed | auc | clipped "
         f"| recovery @{low:.0%} | recovery @{high:.0%} | collateral |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
@@ -199,13 +424,18 @@ def _matrix(labels: list[str], cell) -> str:
     return "\n".join(rows)
 
 
-def target_agreement(scored: pd.DataFrame, census: pd.DataFrame, scorers: tuple[str, ...]) -> str:
+def target_agreement(
+    scored: pd.DataFrame,
+    census: pd.DataFrame,
+    scorers: tuple[str, ...],
+    plots_dir: Path | None = None,
+) -> str:
     """Share of players for whom two scorers chose the SAME match.
 
     Independent of mechanism, severity AND bar: every column medianed on is a
     clean census column, so this is one matrix rather than one per condition.
     Players a scorer could not score are excluded from its pairs and reported
-    as coverage instead -- they inherit the shipped rule's row, and counting
+    as coverage instead -- they inherit max|z|'s row, and counting
     that as agreement would flatter exactly the scorers with the least to say.
     """
     default, choices = injection_test.target_choices(scored, census, scorers)
@@ -221,26 +451,56 @@ def target_agreement(scored: pd.DataFrame, census: pd.DataFrame, scorers: tuple[
             same = sum(1 for p in both if choices[a][p] == choices[b][p])
             return f"{same / len(both):.0%} ({len(both)})"
 
-        cover = (
-            ", ".join(f"{s} {len(set(choices[s]) & players) / len(players):.0%}" for s in present)
-            if players
-            else ""
+        # Reported only when a scorer misses someone: a line reading 100% every
+        # time trains a reader to skip the one case worth seeing.
+        gaps = ", ".join(
+            f"{s} {len(set(choices[s]) & players) / len(players):.0%}"
+            for s in present
+            if players and len(set(choices[s]) & players) < len(players)
         )
+        note = f"\n\nincomplete coverage: {gaps}" if gaps else ""
         if folded:
             return (
                 f"\n<details>\n<summary>{title} (n={len(players):,})</summary>\n"
-                f"\n{_matrix(present, cell)}\n\ncoverage: {cover}\n\n</details>"
+                f"\n{_matrix(present, cell)}{note}\n\n</details>"
             )
-        return (
-            f"\n### {title} (n={len(players):,})\n\n{_matrix(present, cell)}\n\ncoverage: {cover}"
-        )
+        return f"\n### {title} (n={len(players):,})\n\n{_matrix(present, cell)}{note}"
 
     out = [
-        "\nBar- and dose-free. Gated and ungated max|z| rank on the same statistic, so they",
-        "would share every target by construction and are not listed twice. Cells exclude",
-        "players a scorer could not score; those appear in `coverage` instead.",
-        block(everyone, "all positions"),
+        "\nBar- and dose-free. A gap in coverage is reported under the grid.",
     ]
+    if plots_dir is None:
+        out.append(block(everyone, "all positions"))
+    else:
+        values, texts = [], []
+        for a in present:
+            row_v, row_t = [], []
+            for b in present:
+                both = set(choices[a]) & set(choices[b]) & everyone
+                if both:
+                    pct = 100.0 * sum(1 for q in both if choices[a][q] == choices[b][q]) / len(both)
+                    row_v.append(pct)
+                    row_t.append(f"{pct:.0f}%")
+                else:
+                    row_v.append(float("nan"))
+                    row_t.append("–")
+            values.append(row_v)
+            texts.append(row_t)
+        _plot_matrix(
+            present,
+            values,
+            texts,
+            f"same target match chosen (n={len(everyone):,})",
+            plots_dir / "target_agreement.svg",
+        )
+        out.append("\n![target agreement](plots/target_agreement.svg)")
+        gaps = ", ".join(
+            f"{s} {len(set(choices[s]) & everyone) / len(everyone):.0%}"
+            for s in present
+            if everyone and len(set(choices[s]) & everyone) < len(everyone)
+        )
+        if gaps:
+            out.append(f"\nincomplete coverage: {gaps}")
     for code in heldout.POSITIONS:
         cut = {p for p in everyone if position.get(p) == code}
         if not cut:
@@ -262,7 +522,7 @@ def detection_agreement(
     severity: float,
     tallies: tuple[str, ...],
     rate: float,
-    sigma_gate: float = baseline.CORROBORATING_SIGMA,
+    plots_dir: Path | None = None,
 ) -> str:
     """Share of flagged PLAYERS two scorers share, at one dose and one bar.
 
@@ -275,14 +535,11 @@ def detection_agreement(
     ]
     position = block.groupby("player_id")["position_code"].first()
     caught: dict[str, set] = {}
-    for tally, scorer, gated in injection_test.tallies_for(set(block["scorer"]), bars):
+    for tally in injection_test.tallies_for(set(block["scorer"]), bars):
         if tally not in tallies:
             continue
-        r = block[block.scorer == scorer]
-        hit = r["after"] >= bars[tally]
-        if scorer == "max" and gated:
-            hit = hit & (r["sigma_after"].abs() >= sigma_gate)
-        caught[tally] = set(r.loc[hit, "player_id"])
+        r = block[block.scorer == tally]
+        caught[tally] = set(r.loc[r["after"] >= bars[tally], "player_id"])
     present = [t for t in tallies if t in caught]
 
     def block_for(players: set, title: str, folded: bool = False) -> str:
@@ -309,11 +566,40 @@ def detection_agreement(
 
     everyone = set(block["player_id"])
     out = [
-        "\nCell = `|A∩B|/|A|` / Jaccard. Row A, column B: of the players A caught, the share",
-        "B also caught. Asymmetric on purpose — a scorer that catches few reads high across",
-        "its row and low down its column.",
-        block_for(everyone, "all positions"),
+        "\nCell = `|A∩B|/|A|` / Jaccard. Row A, column B: of the players A caught, "
+        "the share B also caught. Asymmetric on purpose.",
     ]
+    if plots_dir is None:
+        out.append(block_for(everyone, "all positions"))
+    else:
+        sets = {s: caught[s] & everyone for s in present}
+        values, texts = [], []
+        for a in present:
+            row_v, row_t = [], []
+            for b in present:
+                union = len(sets[a] | sets[b])
+                shared = len(sets[a] & sets[b])
+                if not union:
+                    row_v.append(float("nan"))
+                    row_t.append("–")
+                elif sets[a]:
+                    pct = 100.0 * shared / len(sets[a])
+                    row_v.append(pct)
+                    row_t.append(f"{pct:.0f}/{100.0 * shared / union:.0f}")
+                else:
+                    row_v.append(0.0)
+                    row_t.append(f"–/{100.0 * shared / union:.0f}")
+            values.append(row_v)
+            texts.append(row_t)
+        _plot_matrix(
+            present,
+            values,
+            texts,
+            f"players caught by both: of A's catches / Jaccard, % (n={len(everyone):,})",
+            plots_dir / "detection_agreement.svg",
+        )
+        out.append("\n![detection agreement](plots/detection_agreement.svg)")
+        out.append("\ncaught: " + ", ".join(f"{s} {len(sets[s]):,}" for s in present))
     for code in heldout.POSITIONS:
         cut = {p for p in everyone if position.get(p) == code}
         if not cut:
@@ -338,15 +624,13 @@ def build(
     results: pd.DataFrame,
     headline: tuple[str, float],
     rates: tuple[float, ...] = RATES,
+    plots_dir: Path | None = None,
 ) -> str:
     """Every table, from one results frame."""
-    reference = injection_test.reference_scores(scored, census)
     bars = {r: heldout.production_bars(scored, census, r) for r in rates}
-    per_rate = {
-        r: injection_test.cell_statistics(results, bars[r], reference=reference) for r in rates
-    }
+    per_rate = {r: injection_test.cell_statistics(results, bars[r]) for r in rates}
     # "max" is merged in from the scored frame, not a census column, so it must
-    # be admitted explicitly or the shipped rule drops out of the matrix. A
+    # be admitted explicitly or max|z| drops out of the matrix. A
     # forest-free census still CARRIES the forest columns, all-NaN, so presence
     # is not enough -- they would fill the matrix with dead rows at 0% coverage.
     scorers = tuple(
@@ -356,28 +640,37 @@ def build(
     )
     mechanism, severity = headline
     parts = [
+        *(f"<!-- {k}={v} -->" for k, v in _stamps().items()),
         "# Phase 2 — injection sensitivity\n",
         _context(scored, rates, headline),
         headline_summary(per_rate[min(rates)], min(rates), headline),
         "\n```",
         injection_test.census_rates(scored, census, bars[min(rates)], min(rates)),
         "```",
-        _fold("DIRECT metric space", detection_table(per_rate, DIRECT, "DIRECT metric space")),
-        _fold("RESIDUAL (z) space", detection_table(per_rate, RESIDUAL, "RESIDUAL (z) space")),
+        _fold(
+            "DIRECT metric space",
+            detection_section(per_rate, DIRECT, "DIRECT metric space", mechanism, plots_dir),
+        ),
+        _fold(
+            "RESIDUAL (z) space",
+            detection_section(per_rate, RESIDUAL, "RESIDUAL (z) space", mechanism, plots_dir),
+        ),
         _fold(
             "Target agreement (same match chosen)",
-            target_agreement(scored, census, scorers),
+            target_agreement(scored, census, scorers, plots_dir),
         ),
     ]
-    # Matrix 2 at the SHIPPED rate only. The 5% pass was a control on whether
+    # Matrix 2 at the PRIMARY rate only. The 5% pass was a control on whether
     # agreement is a bar artefact; the caught counts printed under each grid
     # carry that, and the census is cached, so it can be added later without
     # refitting anything.
-    shipped = min(rates)
+    primary = min(rates)
     parts.append(
         _fold(
-            f"Detection agreement ({mechanism}, k={severity:g}, bar {shipped:.0%})",
-            detection_agreement(results, bars[shipped], mechanism, severity, EVERY_TALLY, shipped),
+            f"Detection agreement ({mechanism}, k={severity:g}, bar {primary:.0%})",
+            detection_agreement(
+                results, bars[primary], mechanism, severity, EVERY_TALLY, primary, plots_dir
+            ),
         )
     )
     parts.append(_fold("Notes", caption(scored, census, rates)))
@@ -439,7 +732,7 @@ def caption(scored: pd.DataFrame, census: pd.DataFrame, rates: tuple[float, ...]
             "relocate. Those rows received *less* than was asked for, so a miss there is "
             "delivery rather than detection. Read it beside the achieved dose, which says how "
             "much was actually delivered on average.",
-            "- Detection agreement is **one condition and the shipped 1% bar only**. Agreement rises with "
+            "- Detection agreement is **one condition and the primary bar only**. Agreement rises with "
             "set size alone, so read the `caught` counts under each grid before reading the "
             "percentages. Note that k is split across channels on the coordinated condition "
             "(`compose` divides by √parts), so `correlated:3.0` delivers 1.5 sd per channel — "
@@ -449,6 +742,35 @@ def caption(scored: pd.DataFrame, census: pd.DataFrame, rates: tuple[float, ...]
             "- Bars are derived from this population at run time, never hardcoded.",
         ]
     )
+
+
+def _mark_stale(target: Path, state: str) -> int:
+    """Band the report and the README so a deferred re-run is visible upstream.
+
+    A stale number that nobody has labelled is worse than no number: the whole
+    point of publishing is that someone downstream reads it without checking
+    when it was made.
+    """
+    if state in ("fresh", "render"):
+        print(f"{target}: {state}; no stale banner needed")
+        return 0
+    text = target.read_text(encoding="utf-8")
+    if STALE_BANNER.splitlines()[0] not in text:
+        head, _, rest = text.partition("# Phase 2 — injection sensitivity\n")
+        target.write_text(
+            head + "# Phase 2 — injection sensitivity\n\n" + STALE_BANNER + rest, encoding="utf-8"
+        )
+        print(f"banded {target}")
+    readme = Path("README.md")
+    if readme.exists():
+        rt = readme.read_text(encoding="utf-8")
+        marker = "## Validation"
+        if marker in rt and "**These numbers are stale.**" not in rt:
+            readme.write_text(
+                rt.replace(marker, marker + "\n\n" + STALE_BANNER, 1), encoding="utf-8"
+            )
+            print("banded README.md")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -493,12 +815,48 @@ def main(argv: list[str] | None = None) -> int:
         "so a re-render is seconds against a cached census.",
     )
     parser.add_argument(
+        "--check",
+        action="store_true",
+        help="classify the published report against the current code and exit: "
+        "0 fresh, 1 needs a re-render (seconds), 2 needs a full campaign re-run. "
+        "Reads no data, so it works anywhere the code does.",
+    )
+    parser.add_argument(
+        "--stale-ok",
+        action="store_true",
+        help="render from a results parquet the stamp rejects, and band the "
+        "output as stale. For previewing a report's shape before paying for the "
+        "re-run the changed code demands.",
+    )
+    parser.add_argument(
+        "--mark-stale",
+        action="store_true",
+        help="band the published report and the README's headline with a stale "
+        "warning, for when a re-run is deferred rather than done.",
+    )
+    parser.add_argument(
         "--out",
         type=str,
         default=None,
         help="markdown file to write (default: <data dir>/reports/phase2.md)",
     )
     args = parser.parse_args(argv)
+
+    published = Path(args.out) if args.out else paths.report_dir() / "phase2.md"
+    if args.check or args.mark_stale:
+        # The PUBLISHED copy is the tracked one -- that is what the hook
+        # checks and what a reader arriving from the README opens. The data-dir
+        # render is a working artefact and nobody cites it.
+        tracked = Path("results/phase2.md")
+        target = tracked if tracked.exists() else published
+        if not target.exists():
+            print(f"no report at {target}; nothing to check")
+            return 0
+        state, detail = freshness(target.read_text(encoding="utf-8"))
+        if args.mark_stale:
+            return _mark_stale(target, state)
+        print(f"{target}: {state} -- {detail}")
+        return {"fresh": 0, "render": 1, "analysis": 2, "unknown": 2}[state]
 
     name, _, dose = args.headline.partition(":")
     mart = baseline.load()
@@ -511,7 +869,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cache = Path(args.census) if args.census else None
     if cache is not None and cache.exists():
-        census = heldout.read_census(cache, scored)
+        census = pd.read_parquet(cache) if args.stale_ok else heldout.read_census(cache, scored)
     else:
         census = heldout.score_all(scored, forest=args.forest, jobs=args.jobs)
         if cache is not None:
@@ -526,7 +884,11 @@ def main(argv: list[str] | None = None) -> int:
         # stamp -- the census hash covers baseline+heldout only, and a saved
         # results file would otherwise survive a change to the allocator, a
         # capacity, a mechanism or the ladder and re-render silently stale.
-        results = heldout.read_stamped(saved, scored, what="results", extra=(injection_test,))
+        if args.stale_ok:
+            results = pd.read_parquet(saved)
+            print(f"reading {saved} WITHOUT the stamp check; output banded stale")
+        else:
+            results = heldout.read_stamped(saved, scored, what="results", extra=(injection_test,))
         print(f"re-rendering from {saved}; analysis skipped")
     else:
         # The coordinated multi-variable injection is part of the condition
@@ -546,7 +908,20 @@ def main(argv: list[str] | None = None) -> int:
         saved.parent.mkdir(parents=True, exist_ok=True)
         heldout.write_stamped(saved, results, scored, extra=(injection_test,))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(build(scored, census, results, (name, float(dose))), encoding="utf-8")
+    rendered = build(scored, census, results, (name, float(dose)), plots_dir=path.parent / "plots")
+    if args.stale_ok:
+        head, _, rest = rendered.partition("# Phase 2 — injection sensitivity\n")
+        rendered = head + "# Phase 2 — injection sensitivity\n\n" + STALE_BANNER + rest
+    path.write_text(rendered, encoding="utf-8")
+    # A fresh render answers the banner, so it must also remove it -- a stale
+    # warning left on current numbers is its own kind of wrong.
+    readme = Path("README.md")
+    if readme.exists() and STALE_BANNER in readme.read_text(encoding="utf-8"):
+        readme.write_text(
+            readme.read_text(encoding="utf-8").replace("\n\n" + STALE_BANNER, "", 1),
+            encoding="utf-8",
+        )
+        print("cleared the stale banner from README.md")
     print(f"wrote {path}\nresults at {saved}  (re-render from this; no rerun needed)")
     return 0
 
