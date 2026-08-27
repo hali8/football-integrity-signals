@@ -7,23 +7,33 @@ match, and gives a duckdb/dbt warehouse to build match-integrity signals on top 
 
 ## Output / analysis summary
 
-> **⚠ These numbers are stale.** The corroboration gate has since been removed and the AUC re-based, so the figures below do not describe the current detector. Regenerate with `fis-report --forest --jobs -1`.
+A limited pathfinder — at what level an injected signal can be found in
+aggregate data, with no attempt to account for all correlated factors.
 
-One full-population run, 2026-08-26: 43,993 player-matches, 2,140 players, eight
+One full-population run, 2026-08-27: 43,993 player-matches, 2,140 players, seven
 scorers against five single mechanisms plus a coordinated four-channel injection.
+One typical match per player: the dose is k times that player's own spread, so
+injecting at the centre is what makes k mean k.
 
 **The best scorer depends on the manipulation.** Against a single metric, max|z|
 — the simplest scorer, and the baseline the others have to beat — is
 competitive and the isolation forests are last. Against a coordinated
 manipulation across four variables the order reverses: the forests recover
-**2.3× max|z|** (21.1% against 9.3% of injected targets, 1% bar, k=3). The case
+**2.1× max|z|** (21.7% against 10.4% of injected targets, 1% bar, k=3). The case
 a real fixer most resembles is the one max|z| handles worst.
+
+That ordering is about the cut rather than about ranking. At every dose the
+forests have the LOWER AUC — `mahalanobis_res` reaches 0.922 against the
+forest's 0.862 at k=3 — so they rank perturbed rows above clean ones less
+reliably, and win by moving fewer rows further past the bar.
 
 [Full sensitivity tables](results/phase2.md)
 
-Two limits. The population is observed, not certified-clean, so base rates are
-upper bounds on the false-positive rate. And these measure sensitivity to
+Three limits. The population is observed, not certified-clean, so base rates
+are upper bounds on the false-positive rate. These measure sensitivity to
 _simulated_ manipulation — nothing here is validated against a confirmed case.
+And the run is held-out: only the injected rows are scored, so what a
+manipulation does to the player's OTHER matches is not measured.
 
 ## Stage rule
 
@@ -83,6 +93,9 @@ curl -fsSL https://pixi.sh/install.sh | sh   # macOS / Linux
 brew install pixi                            # macOS, via Homebrew
 winget install prefix-dev.pixi               # Windows
 ```
+
+The lock file is solved for `osx-arm64` only. Elsewhere, either add your
+platform to `pixi.toml` and re-lock, or take the pip route below.
 
 ```bash
 pixi install
@@ -454,22 +467,40 @@ Anything below marked _open_ is a judgement that has not been made yet.
 | `passes_outcome_inferred`      | How much of `passes_completed` is derived rather than recorded.                                                                                                                              |
 | `pass_completion_pct`          | `passes_completed / passes_with_outcome`, null when nothing was judged.                                                                                                                      |
 | `crosses`                      | Events whose qualifier list contains `Pass:CROSS`.                                                                                                                                           |
-| `interceptions`                | Every interception, whichever event kloppy built it from.                                                                                                                                    |
-| `defensive_actions`            | Tackles, interceptions and clearances. An interception recorded as a clearance is one action, not two.                                                                                       |
-| `defensive_action_success_pct` | Share of defensive actions Wyscout scored that succeeded. Tackles, clearances and interceptions count alike. Nothing here is inferred.                                                       |
+| `interceptions`                | Every interception, whichever event kloppy built it from. A volume measure only — see below.                                                                                                 |
+| `tackles` / `tackles_won`      | Sliding tackles among the player's duels, and how many were won.                                                                                                                             |
+| `defensive_actions`            | Defensive volume: defensive-side duels, clearances and interceptions. An interception recorded as a clearance is one action, not two.                                                        |
+| `defensive_action_success_pct` | Defensive duels won plus clearances that removed danger, over those same actions. A narrower set than `defensive_actions`.                                                                   |
 | `touches_in_defensive_third`   | Actions starting at `x < 1/3`.                                                                                                                                                               |
 | `mean_action_x`                | Mean starting `x` over the player's actions that have a position.                                                                                                                            |
 
-A **tackle** is a `DUEL` carrying Wyscout tag 1601 `sliding_tackle`. Wyscout has
-no separate tackle event, so tackles are a subset of duels and the other duels
-are counted separately as `duel`.
+**Every action is scored on the tag Wyscout wrote for it** — won or lost for
+duels, accurate for passes, danger removed for clearances. Scoring everything on
+the accuracy tag made the rate a blend of four different constructs, and for
+clearances it ran backwards.
 
-**A clearance succeeds if Wyscout tagged it 1801.** kloppy hardcodes
-`result: None` for clearances, so that tag is the only surviving outcome — which
-is why the ingest carries the raw tag ids. A cleared ball and a won tackle count
-alike in `defensive_action_success_pct`: both ended the opponent's possession,
-and the rate would otherwise describe defenders who tackle rather than defenders
-who defend.
+**Duel side comes from the raw subevent, not from kloppy's event type.** kloppy
+maps a ground attacking duel and a ground defending duel to the same `GROUND`
+type, so `subevent_id` is the only place the two are told apart.
+
+**Only the ground defending duel is a defensive action.** Wyscout gives air and
+loose-ball duels no side, and against who held the ball beforehand they are even
+contests — about as often the player's own team as the opponent's. Counting them
+as defending would fill the denominator with players challenging for a ball
+their side already had, so they stay in the taxonomy as plain duels. Ground
+attacking duels belong to the player carrying the ball. A sliding tackle is a
+tag on a duel rather than a kind of its own, and keeps its own count.
+
+**A clearance succeeds if it found a teammate or put the ball out of play.**
+Conceding a corner is the one out-of-play outcome that leaves the defence worse
+off; a throw-in is the job done. kloppy hardcodes
+`result: None` for clearances, which is why the ingest carries the raw tag ids.
+
+**Interceptions carry no rate.** Wyscout logs an interception as something that
+happened, not an attempt that could have failed — almost none carry a lost
+tag. The failed attempts are not recorded anywhere, so there is no denominator, and a
+success rate over them would be near-100% by construction. They stay in
+`defensive_actions` and in the per-90 volume.
 
 **Crosses must be counted from `qualifiers`, never from `pass_type`.** kloppy's
 flat column keeps only the last qualifier it attached, so a cross tagged "high"
@@ -525,12 +556,19 @@ filed as whatever it already was and tagged 1401; kloppy turns that tag into an
 one for a duel or touch. So an interception always has a **host**, and the leaf
 names it:
 
-| Leaf                        | n      | kloppy's treatment            |
-| --------------------------- | ------ | ----------------------------- |
-| `interception_as_pass`      | 67,967 | inserted beside the pass      |
-| `interception_as_touch`     | 66,016 | replaced _Others on the ball_ |
-| `interception_as_clearance` | 32,328 | inserted beside the clearance |
-| `interception_as_duel`      | 7,357  | replaced the duel             |
+| Leaf                        | kloppy's treatment            |
+| --------------------------- | ----------------------------- |
+| `interception_as_pass`      | inserted beside the pass      |
+| `interception_as_touch`     | replaced _Others on the ball_ |
+| `interception_as_clearance` | inserted beside the clearance |
+| `interception_as_duel`      | replaced the duel             |
+
+The duel leaf is the one place the interception tag outranks the subevent.
+Wyscout files a won ball under what the player did next, so a ball won and then
+carried is recorded as a ground _attacking_ duel carrying tag 1401. Those rows
+are preceded by the opponent holding the ball far more often than untagged
+attacking duels are, so the tag is believed and the row counts as an
+interception.
 
 `interceptions` sums all four — the number of times the player won the ball.
 `defensive_actions` excludes `interception_as_clearance`, because those
@@ -550,7 +588,7 @@ defensive, and `relocate_upfield` moving touches out of the defensive third
 rather than degrading a count.
 
 Motivation for what we inject, not support for what we measure: a Research
-Master's thesis, not peer-reviewed, thesis-scale sample.
+Master's thesis, not peer-reviewed, two matches and four instructed defenders.
 
 > Ellens, S. (2019). _Can we catch the crooks: examining performance metrics of
 > match-fixing association football players._ Research Master thesis, Institute
@@ -584,9 +622,10 @@ derived requirement, not a nice-to-have.
 
 - **Recoveries have no outcome at all** in the source: no accurate tag is ever
   written for them. They cannot join a success rate on any definition.
-- **Nothing is expressed per 90.** `int_player_match_minutes` models minutes
-  played, but no metric divides by them yet, so every figure in the mart is a
-  per-match count. Comparing a substitute with a starter needs the rate.
+- **Per 90 is an analysis-layer step, not a mart column.** The mart stores
+  per-match counts; `baseline.prepare` divides the three volume metrics by
+  exposure at read time. Any other consumer of the mart gets counts, and
+  comparing a substitute with a starter needs the rate.
 - **The short goal-kick threshold is read off a curve.** `end_x < 0.3` is where
   retention breaks, 95% below and 57% above. Nobody has checked it against a
   football definition — whether the ball reached the kicking team's own half, say.
