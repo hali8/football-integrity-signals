@@ -147,8 +147,6 @@ def _results(shift_is_nan: bool) -> pd.DataFrame:
             "is_target": True,
             "clean": rng.normal(size=n),
             "after": rng.normal(size=n),
-            "sigma_clean": rng.normal(size=n) * 5,
-            "sigma_after": rng.normal(size=n) * 5,
             "achieved": np.nan,
             "achieved_z": np.nan,
             "achieved_a": -1.0,
@@ -359,8 +357,6 @@ def _cells() -> pd.DataFrame:
             "achieved_z": 1.0,
             "clean": [9.0, 0.0, 0.0, 0.0],
             "after": [9.5, 9.0, 0.5, np.nan],
-            "sigma_clean": 5.0,
-            "sigma_after": 5.0,
         }
     )
 
@@ -374,26 +370,19 @@ def test_recovery_excludes_rows_already_over_the_bar():
     row = stats.iloc[0]
     assert row["caught"] == pytest.approx(0.50), "2 of 4 sit above the bar after"
     assert row["recovery"] == pytest.approx(0.25), "only one CROSSED because of it"
-    # Agresti-Coull: (0.25*4+2)/8 = 0.375, se = sqrt(0.375*0.625/8).
-    assert row["recovery_se"] == pytest.approx(np.sqrt(0.375 * 0.625 / 8))
+    assert (row["recovered"], row["n"]) == (1, 4), "the rate's numerator and denominator"
     assert row["clipped"] == pytest.approx(0.25)
 
 
-def test_an_empty_recovery_cell_does_not_claim_zero_uncertainty():
-    """sqrt(p(1-p)/n) is exactly 0 at p=0, so an untouched cell prints
-    '0.0% +-0.0%' -- which reads as measured-to-be-zero when it means no events
-    were seen. Where the zero is STRUCTURAL (k=0, after IS clean) it is exact."""
+def test_an_empty_recovery_cell_still_carries_its_denominator():
+    """A bare '0.0%' hides how many rows produced it. The targets are the whole
+    population, so the honest cell is 0/4 -- the count and the base, not a rate
+    with an interval bolted on."""
     missed = _cells()
     missed["after"] = 0.0  # nothing crosses a bar of 5
     stats = injection_test.cell_statistics(missed, {"mahalanobis": 5.0})
     assert stats.iloc[0]["recovery"] == pytest.approx(0.0)
-    assert stats.iloc[0]["recovery_se"] > 0.05, "no events seen is not zero uncertainty"
-
-    null = _cells()
-    null["after"] = null["clean"]
-    exact = injection_test.cell_statistics(null, {"mahalanobis": 5.0})
-    assert exact.iloc[0]["recovery"] == pytest.approx(0.0)
-    assert exact.iloc[0]["recovery_se"] == 0.0, "k=0 is exact, not estimated"
+    assert (stats.iloc[0]["recovered"], stats.iloc[0]["n"]) == (0, 4)
 
 
 def test_the_dose_limiting_clamps_are_the_instrumented_ones():
@@ -528,37 +517,40 @@ def _total(shares: list[float]) -> float:
     return float(np.sqrt(sum(s * s for s in shares)))
 
 
-def test_allocation_preserves_the_requested_sigma():
-    """The composed row is LABELLED k sigma. An equal k/sqrt(n) split silently
-    under-delivers whenever a channel is short of substrate, which makes the
-    label false; water-filling keeps the total."""
-    assert _total(injection_test.allocate(3.0, [9, 9, 9, 9])) == pytest.approx(3.0)
-    # A thin channel is pinned at its ceiling and the rest absorb its share.
-    thin = injection_test.allocate(3.0, [9, 9, 0.4, 9])
-    assert thin[2] == pytest.approx(0.4)
-    assert _total(thin) == pytest.approx(3.0)
-    assert thin[0] == thin[1] == thin[3] > 1.5, "survivors must take MORE than an equal share"
+@pytest.mark.parametrize("seed", range(25))
+def test_allocation_conserves_the_budget_within_the_capacities(seed):
+    """Water-filling's defining law, over random capacity vectors rather than
+    four hand-built ones.
 
+    The composed row is LABELLED k sigma, so the allocator must deliver exactly
+    k unless the capacities cannot reach it -- and then exactly what they can.
+    An equal k/sqrt(n) split silently under-delivers whenever a channel is short
+    of substrate, which is what makes the label false.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(2, 6))
+    # Dead, thin and ample channels together, so both branches are exercised.
+    caps = [
+        float(rng.choice([0.0, rng.uniform(0.05, 0.6), rng.uniform(1.0, 9.0)])) for _ in range(n)
+    ]
+    budget = float(rng.uniform(0.5, 4.0))
+    shares = injection_test.allocate(budget, caps)
 
-def test_a_dead_channel_gives_its_whole_share_to_the_survivors():
-    """Zero capacity must be excluded, not handed a share. A NaN or infinite
-    cap would pass the comparison and waste budget on a channel that cannot
-    move -- reintroducing exactly the shortfall this fixes."""
-    shares = injection_test.allocate(3.0, [9, 9, 0.0, 9])
-    assert shares[2] == 0.0
-    assert _total(shares) == pytest.approx(3.0)
-    # Three survivors sharing the whole budget is k/sqrt(3), not k/sqrt(4).
-    assert shares[0] == pytest.approx(3.0 / np.sqrt(3))
+    assert len(shares) == n
+    for share, cap in zip(shares, caps, strict=True):
+        assert 0.0 <= share <= cap + 1e-9, "no channel may exceed what it can deliver"
 
+    reachable = float(np.sqrt(sum(c * c for c in caps)))
+    assert _total(shares) == pytest.approx(min(budget, reachable), abs=1e-9), (
+        "the total is the requested k, or the whole capacity when k is out of reach"
+    )
 
-def test_allocation_falls_short_only_when_every_channel_is_capped():
-    """A row with nowhere to put the displacement cannot reach k at any
-    allocation. That is a property of the player and must be reported, so the
-    allocator returns the shortfall rather than looping or over-allocating."""
-    capped = injection_test.allocate(3.0, [0.5, 0.5, 0.5, 0.5])
-    assert capped == [0.5, 0.5, 0.5, 0.5]
-    assert _total(capped) == pytest.approx(1.0)
-    assert injection_test.allocate(3.0, [0.0, 0.0]) == [0.0, 0.0]
+    # What makes it water-filling rather than proportional: every channel not
+    # pinned at its ceiling carries an equal share, so a dead one hands its
+    # budget to the survivors instead of wasting it.
+    free = [s for s, c in zip(shares, caps, strict=True) if s < c - 1e-9]
+    if len(free) > 1:
+        assert max(free) - min(free) < 1e-9, "unpinned channels must share equally"
 
 
 def test_a_channel_pinned_at_its_ceiling_does_not_clip():
@@ -615,7 +607,7 @@ def test_the_detection_vector_holds_no_raw_count():
         f"raw count(s) in the detection vector: {sorted(set(baseline.METRICS) & raw)}"
     )
     for metric in baseline.METRICS:
-        assert metric.endswith("_pct") or metric.endswith("_per_90") or metric == "mean_action_x", (
+        assert metric.endswith(("_pct", "_per_90")) or metric == "mean_action_x", (
             f"{metric} is neither a ratio, a per-90 rate, nor a mean over events"
         )
 

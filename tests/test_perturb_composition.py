@@ -40,27 +40,27 @@ def _rng_for(name: str, scaled: float, tag: str = "p|s") -> np.random.Generator:
 
 
 def _row(**overrides) -> pd.Series:
-    base = dict(
-        player_id=1,
-        match_id=1,
-        minutes_played=90.0,
-        regulation_minutes=90.0,
-        actions=60.0,
-        defensive_actions=12,
-        defensive_actions_with_outcome=10,
-        defensive_actions_successful=7,
-        defensive_actions_in_defensive_third=8,
-        touches_in_defensive_third=20.0,
-        sum_start_x_in_defensive_third=4.0,
-        attempts_with_position=50.0,
-        mean_action_x=0.35,
-        passes_completed=30,
-        passes_with_outcome=40,
-        pass_completion_pct=75.0,
-        defensive_action_success_pct=70.0,
-        defensive_actions_per_90=12.0,
-        touches_in_defensive_third_per_90=20.0,
-    )
+    base = {
+        "player_id": 1,
+        "match_id": 1,
+        "minutes_played": 90.0,
+        "regulation_minutes": 90.0,
+        "actions": 60.0,
+        "defensive_actions": 12,
+        "defensive_actions_with_outcome": 10,
+        "defensive_actions_successful": 7,
+        "defensive_actions_in_defensive_third": 8,
+        "touches_in_defensive_third": 20.0,
+        "sum_start_x_in_defensive_third": 4.0,
+        "attempts_with_position": 50.0,
+        "mean_action_x": 0.35,
+        "passes_completed": 30,
+        "passes_with_outcome": 40,
+        "pass_completion_pct": 75.0,
+        "defensive_action_success_pct": 70.0,
+        "defensive_actions_per_90": 12.0,
+        "touches_in_defensive_third_per_90": 20.0,
+    }
     base.update(overrides)
     return pd.Series(base)
 
@@ -106,7 +106,8 @@ def _random_row(rng: np.random.Generator) -> pd.Series:
 
 
 def _same(a, b) -> bool:
-    return (a != a and b != b) or a == b
+    """Equal, counting NaN as equal to NaN -- an untouched column stays NaN."""
+    return (math.isnan(a) and math.isnan(b)) or a == b
 
 
 def test_single_mechanism_through_compose_is_bit_identical():

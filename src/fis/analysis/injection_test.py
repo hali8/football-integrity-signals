@@ -521,7 +521,7 @@ def position_spreads(scored: pd.DataFrame) -> dict[str, dict[str, float]]:
             for c in CONTROLS.values()
         }
         for name, (success, denom) in RATE_CONTROLS.items():
-            usable = g[g[denom] > 0].assign(_r=lambda d: d[success] / d[denom])
+            usable = g[g[denom] > 0].assign(_r=lambda d, s=success, n=denom: d[s] / d[n])
             spreads[name] = float(np.sqrt(usable.groupby("player_id")["_r"].var(ddof=1).mean()))
         out[position] = spreads
     return out
@@ -731,8 +731,11 @@ def run(
                     )
                 ztrain = cz[keep]
                 ztrain = ztrain[~np.isnan(ztrain).any(axis=1)]
-                zdist = np.nan
-                fres = fres_norm = np.nan
+                # The SAME fallback the census uses. Without it a player too
+                # thin for his own residual fit scores NaN here and a pool-fitted
+                # number there, so the table compares a score against a bar drawn
+                # from a differently fitted population.
+                zfit = pool_z
                 if len(ztrain) >= 2:
                     zfit = heldout._Fit(
                         ztrain,
@@ -743,9 +746,10 @@ def run(
                         pool=position_z_rows.get(position) if forest else None,
                         seed=heldout.borrow_seed(player_id),
                     )
-                    zdist = zfit.distance(zrow)
-                    if forest:
-                        _, fres, fres_norm = zfit.score(zrow)
+                zdist = zfit.distance(zrow) if zfit is not None else np.nan
+                fres = fres_norm = np.nan
+                if forest and zfit is not None:
+                    _, fres, fres_norm = zfit.score(zrow)
                 record = {
                     "player_id": player_id,
                     "match_id": mid,
@@ -811,7 +815,7 @@ def run(
                         continue
                     test = by_key.loc[(player_id, match_id)]
 
-                    def rng_for(mechanism_name, scaled_k):
+                    def rng_for(mechanism_name, scaled_k, player_id=player_id, scorer=scorer):
                         return np.random.default_rng(
                             [
                                 seed,
@@ -907,8 +911,6 @@ def run(
                         ),
                         "clean": clean.at[key, scorer],
                         "after": after.at[key, scorer],
-                        "sigma_clean": clean.at[key, "sigma"],
-                        "sigma_after": after.at[key, "sigma"],
                     }
                     if composed:
                         for p in parts:
@@ -942,22 +944,6 @@ def _auc(reference: np.ndarray, hot: np.ndarray) -> float:
     lo = np.searchsorted(clean, perturbed, side="left")
     hi = np.searchsorted(clean, perturbed, side="right")
     return float(np.mean((lo + hi) / (2 * len(clean))))
-
-
-def _recovery_se(rate: float, n: int, structural: bool) -> float:
-    """Standard error on a recovery rate, Agresti-Coull off zero.
-
-    The textbook sqrt(p(1-p)/n) collapses to EXACTLY zero when nothing was
-    recovered, which prints as "measured to be zero" when it means "no events
-    seen, the rate could be up to about 3/n". Where the zero is structural --
-    k=0, where after IS clean -- it really is exact, and stays so.
-    """
-    if not n or not np.isfinite(rate):
-        return np.nan
-    if structural:
-        return 0.0
-    adjusted = (rate * n + 2.0) / (n + 4.0)
-    return float(np.sqrt(adjusted * (1.0 - adjusted) / (n + 4.0)))
 
 
 def tallies_for(present: set, bars: dict[str, float]) -> list[str]:
@@ -1013,16 +999,6 @@ def cell_statistics(
                 gained_dosed = (
                     float((~was & hit)[dosed].mean()) if n_dosed and not composed_block else np.nan
                 )
-                # k=0 leaves after == clean, so its zero is exact rather than
-                # an estimate that happened to see no events.
-                structural = bool(
-                    n
-                    and np.allclose(
-                        r.loc[t, "after"].to_numpy(dtype=float),
-                        r.loc[t, "clean"].to_numpy(dtype=float),
-                        equal_nan=True,
-                    )
-                )
                 # PAIRED against the same rows' own clean scores, not against
                 # the population. Targets are median-selected, so a population
                 # reference gives each scorer a different no-skill floor
@@ -1058,7 +1034,7 @@ def cell_statistics(
                         "n": n,
                         "caught": float(hit[t].mean()) if n else np.nan,
                         "recovery": gained,
-                        "recovery_se": _recovery_se(gained, n, structural),
+                        "recovered": int((~was & hit)[t].sum()) if n else 0,
                         "n_short": (
                             int(r.loc[t, "short"].sum()) if n and "short" in r.columns else 0
                         ),
@@ -1069,7 +1045,7 @@ def cell_statistics(
                         ),
                         "n_dosed": n_dosed,
                         "recovery_dosed": gained_dosed,
-                        "recovery_dosed_se": _recovery_se(gained_dosed, n_dosed, structural),
+                        "recovered_dosed": int((~was & hit)[dosed].sum()) if n_dosed else 0,
                         "auc": auc,
                         # Delivered dose belongs beside detection: mechanisms differ
                         # in how much of the requested sigma they can actually apply,
@@ -1165,7 +1141,7 @@ def summary_persistent(
             if per_dof:
                 on_target = block[block.is_target]
 
-                def dof(part: str) -> str:
+                def dof(part: str, on_target=on_target) -> str:
                     # A dropped metric has no z column in this feature set, so
                     # its shift is unmeasurable here -- say so rather than
                     # printing "+nan", which reads as a defect.
@@ -1216,16 +1192,15 @@ def summary_persistent(
                 label = row.tally
                 auc = f" | auc {row.auc:.3f}" if np.isfinite(row.auc) else ""
                 dosed = (
-                    f" -> {row.recovery_dosed:.1%}+-{row.recovery_dosed_se:.1%}"
-                    f" of {row.n_dosed:,} dosed"
+                    f" -> {row.recovered_dosed:,}/{row.n_dosed:,} dosed ({row.recovery_dosed:.1%})"
                     if np.isfinite(row.recovery_dosed)
                     else ""
                 )
                 head = (
                     f"  {label:12} bar {row.bar:6.2f}"
                     f" | caught {row.caught:5.1%}"
-                    f" | recovered {row.recovery:5.1%}+-{row.recovery_se:.1%}"
-                    f" (n={row.n:,}){dosed}{auc}"
+                    f" | recovered {row.recovered:,}/{row.n:,}"
+                    f" ({row.recovery:5.1%}){dosed}{auc}"
                 )
                 if not row.collateral_measurable:
                     lines.append(f"{head} | collateral not measured (heldout)")
@@ -1334,8 +1309,9 @@ def main(argv: list[str] | None = None) -> int:
         # Population in the key: otherwise a --n pilot and the full run share
         # a filename, and the pilot is reloaded and reported as the full set.
         cache = cache.with_name(f"{cache.stem}{suffix}.n{players}{cache.suffix}")
+    settings = heldout.scoring_config(metrics=metrics, forest=args.forest, limit_players=args.n)
     if cache and cache.exists():
-        census = heldout.read_census(cache, scored)
+        census = heldout.read_census(cache, scored, config=settings)
     else:
         census = heldout.score_all(
             scored,
@@ -1345,7 +1321,7 @@ def main(argv: list[str] | None = None) -> int:
             forest=args.forest,
         )
         if cache:
-            heldout.write_census(cache, census, scored)
+            heldout.write_census(cache, census, scored, config=settings)
     bars = heldout.production_bars(scored, census, args.rate)
     if args.mechanism:
         chosen = {m: MECHANISMS[m] for m in args.mechanism}
