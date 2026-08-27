@@ -185,19 +185,11 @@ models:
       - name: qualifiers
         description: >
           Every qualifier kloppy attached, as "Kind:VALUE". The flat *_type
-          columns keep only the last of each kind, so this is the one to count
-          with: list_contains(qualifiers, 'Pass:CROSS') finds all 33 crosses in
-          a match where pass_type shows 12, and 'Duel:LOOSE_BALL' appears here
-          but never in duel_type at all.
-        data_tests: [not_null]
-
-      - name: qualifiers
-        description: >
-          Every qualifier kloppy attached, as "Kind:VALUE". The flat *_type
           columns keep only the last of each kind, so this is what to count
           with: list_contains(qualifiers, 'Pass:CROSS') finds all 33 crosses in
           a match where pass_type shows 12, and 'Duel:LOOSE_BALL' appears here
           but never in duel_type at all.
+        data_tests: [not_null]
 
       - name: wyscout_tags
         description: >
@@ -205,6 +197,20 @@ models:
           only the counter-attack tag, and hardcodes result = None for
           clearances, so tag 1801 "accurate" is the only way to know whether a
           clearance succeeded.
+
+      - name: subevent_id
+        description: >
+          Raw Wyscout subEventId, joinable to lookup.eventid2name. The only
+          place a ground attacking duel (11) and a ground defending duel (12)
+          are told apart — kloppy maps both to GROUND — so it is what decides
+          which duels are defensive.
+
+      - name: source_index
+        description: >
+          Position in the source events array. A TIE-BREAKER, not evidence of
+          causal order: the timestamp orders events, and this separates the ones
+          it cannot. Event ids are not reliably monotonic in source order, so
+          ordering on them silently reverses some adjacent equal-time pairs.
 
       - name: start_x
         description: >

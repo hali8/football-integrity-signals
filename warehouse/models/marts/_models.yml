@@ -115,15 +115,24 @@ models:
           Every interception, whichever event kloppy built it from. Deliberately
           a different set from defensive_actions.
         data_tests: [not_null]
+      - name: tackles
+        description: Sliding tackles among the player's duels.
+        data_tests: [not_null]
+      - name: tackles_won
+        description: Of those, the ones won.
+        data_tests: [not_null]
       - name: defensive_actions
         description: >
-          Tackles, interceptions and clearances, per the spec definition, with an
-          interception recorded as a clearance counted once rather than twice.
+          Defensive VOLUME — defensive-side duels, clearances and interceptions,
+          with an interception recorded as a clearance counted once rather than
+          twice.
         data_tests: [not_null]
       - name: defensive_action_success_pct
         description: >
-          Share of defensive actions Wyscout scored that succeeded. Nothing here
-          is inferred.
+          Defensive-side duels won plus clearances that removed danger, over
+          those same actions. A NARROWER set than defensive_actions:
+          interceptions have no attempt that could have failed, so they carry no
+          denominator and stay a volume measure. Nothing here is inferred.
       - name: touches_in_defensive_third
         description: Actions starting at x < 1/3, with x towards the attacked goal.
         data_tests: [not_null]

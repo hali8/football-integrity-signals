@@ -29,10 +29,11 @@ models:
       - name: action_type
         description: >
           The leaf: pass, goal_kick_short, goal_kick_long, shot, clearance,
-          tackle, duel, recovery, one of the interception_as_* kinds, or the
-          lowercased event type. A tackle is a DUEL carrying Wyscout tag 1601,
-          so it is a subset of duels, counted separately. Leaves exist where
-          counting two things as one would hide something.
+          defensive_duel, attacking_duel, duel, recovery, one of the
+          interception_as_* kinds, or the lowercased event type. Duel side comes
+          from the raw subevent and is decided BEFORE kloppy's event type, so a
+          source event is never both a duel and an interception. Leaves exist
+          where counting two things as one would hide something.
         data_tests: [not_null]
       - name: action_group
         description: >
@@ -42,6 +43,14 @@ models:
         data_tests: [not_null]
       - name: is_pass
         description: True for pass and both goal-kick leaves.
+        data_tests: [not_null]
+      - name: tackles
+        description: >
+          Sliding tackles (Wyscout tag 1601) among the duels. A count of its own
+          because duel SIDE now decides the action type, not the tackle tag.
+        data_tests: [not_null]
+      - name: tackles_won
+        description: Of those, the ones carrying tag 703 won.
         data_tests: [not_null]
       - name: attempts
         data_tests: [not_null]

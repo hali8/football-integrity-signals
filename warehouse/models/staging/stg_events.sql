@@ -3,7 +3,7 @@
   aggregation or business logic. `timestamp` arrives as microseconds into the
   period and is exposed as seconds. Four always-null kloppy columns are
   dropped. `provider` exists so downstream keys can be (provider, id) when a
-  second source arrives. See TODO.md.
+  second source arrives.
 #}
 
 with source as (
@@ -37,7 +37,7 @@ renamed as (
         is_counter_attack as is_counter_attack,
 
         -- Normalised 0-1, ACTION_EXECUTING_TEAM orientation. Sentinel corner-flag
-        -- positions on sentinel event kinds are nulled; see PROBLEMS.md.
+        -- positions on sentinel event kinds are nulled; see the README, "Deserialisation workarounds".
         case when {{ has_recorded_position() }} then coordinates_x end as start_x,
         case when {{ has_recorded_position() }} then coordinates_y end as start_y,
         end_coordinates_x as end_x,
@@ -58,6 +58,15 @@ renamed as (
         -- Raw Wyscout tag ids; kloppy discards most of them, including
         -- 1801/1802 accurate on clearances.
         wyscout_tags as wyscout_tags,
+
+        -- Raw subEventId. The only place a ground attacking duel (11) and a
+        -- ground defending duel (12) are told apart -- kloppy maps both to
+        -- GROUND. eventid2name.csv labels them.
+        wyscout_subevent as subevent_id,
+
+        -- Position in the source events array. The only authority on order
+        -- where two events share a timestamp; ids are not reliably monotonic.
+        wyscout_index as source_index,
 
         -- Tag 101 is written on both the scorer's shot and the conceding
         -- keeper's event; the keeper copy is excluded to avoid double counting.

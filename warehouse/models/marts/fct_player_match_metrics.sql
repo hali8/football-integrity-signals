@@ -38,6 +38,11 @@ matches as (
 
 ),
 
+{#- Defensive volume vs the scored subset. Interceptions are volume only:
+    there is no recorded attempt that could have failed. -#}
+{% set defensive_volume = "('defensive_duel', 'clearance', 'interception_as_pass', 'interception_as_touch', 'interception_as_duel')" %}
+{% set defensive_scored = "('defensive_duel', 'clearance')" %}
+
 pivoted as (
 
     select
@@ -60,45 +65,36 @@ pivoted as (
             filter (where is_pass), 0) as passes_outcome_inferred,
         sum(crosses) as crosses,
 
-        -- Spec definition: tackle, interception, clearance. The clearance-hosted
-        -- interception leaf is left out because its host is already in the sum.
+        -- Defensive VOLUME: duels contested on the defensive side, clearances
+        -- and interceptions. The clearance-hosted interception leaf is left out
+        -- because its host is already in the sum.
         coalesce(sum(attempts) filter (
-            where action_type in (
-                'tackle', 'clearance',
-                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
-            )
+            where action_type in {{ defensive_volume }}
         ), 0) as defensive_actions,
-        -- Recorded plus inferred, as with passes; possession-continuity fills
-        -- in the outcomes Wyscout never scores.
-        coalesce(sum(attempts_with_recorded_outcome + attempts_with_inferred_outcome) filter (
-            where action_type in (
-                'tackle', 'clearance',
-                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
-            )
+        -- The RATE is a narrower set. An interception has almost no recorded
+        -- attempt that could have failed, so it has no denominator and stays a
+        -- volume measure. Duels and clearances can be lost, and are.
+        coalesce(sum(attempts_with_recorded_outcome) filter (
+            where action_type in {{ defensive_scored }}
         ), 0) as defensive_actions_with_outcome,
-        coalesce(sum(successes_recorded + successes_inferred) filter (
-            where action_type in (
-                'tackle', 'clearance',
-                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
-            )
+        coalesce(sum(successes_recorded) filter (
+            where action_type in {{ defensive_scored }}
         ), 0) as defensive_actions_successful,
+        -- Zero by construction now: every duel and clearance carries a native
+        -- outcome, so nothing here is inferred. Kept so that stays checkable.
         coalesce(sum(attempts_with_inferred_outcome) filter (
-            where action_type in (
-                'tackle', 'clearance',
-                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
-            )
+            where action_type in {{ defensive_scored }}
         ), 0) as defensive_actions_outcome_inferred,
 
         -- All interceptions, however kloppy recorded them. Not the same set as
         -- defensive_actions, deliberately.
         coalesce(sum(attempts) filter (where action_group = 'interception'), 0) as interceptions,
+        coalesce(sum(tackles), 0) as tackles,
+        coalesce(sum(tackles_won), 0) as tackles_won,
 
         sum(in_defensive_third) as touches_in_defensive_third,
         coalesce(sum(in_defensive_third) filter (
-            where action_type in (
-                'tackle', 'clearance',
-                'interception_as_pass', 'interception_as_touch', 'interception_as_duel'
-            )
+            where action_type in {{ defensive_volume }}
         ), 0) as defensive_actions_in_defensive_third,
         sum(attempts_beyond_halfway) as attempts_beyond_halfway,
         -- Weighted by actions that have a position, so goal kicks -- whose
@@ -148,6 +144,8 @@ select
     round(passes_completed * 100.0 / nullif(passes_with_outcome, 0), 2) as pass_completion_pct,
     crosses,
     interceptions,
+    tackles,
+    tackles_won,
     defensive_actions,
     -- The rate's denominator, exposed so a consumer can weight by how much was
     -- actually scored rather than treating every percentage alike.
@@ -164,7 +162,8 @@ select
     attempts_with_position,
     sum_start_x_in_defensive_third,
     -- A keeper at or above the floor is being recorded in the opposing frame,
-    -- not playing upfield. Detectable only for goalkeepers. See PROBLEMS.md.
+    -- not playing upfield. Detectable only for goalkeepers; see the README,
+    -- "Deserialisation workarounds".
     players.position_code = 'GK'
         and attempts_beyond_halfway >= {{ var('mirrored_event_floor', 4) }}
         as has_mirrored_positions
