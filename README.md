@@ -5,6 +5,26 @@ Package to get familiar with match and player data.
 Fetches a public Wyscout event dataset, normalises it into one parquet file per
 match, and gives a duckdb/dbt warehouse to build match-integrity signals on top of.
 
+## Output / analysis summary
+
+> **⚠ These numbers are stale.** The corroboration gate has since been removed and the AUC re-based, so the figures below do not describe the current detector. Regenerate with `fis-report --forest --jobs -1`.
+
+One full-population run, 2026-08-26: 43,993 player-matches, 2,140 players, eight
+scorers against five single mechanisms plus a coordinated four-channel injection.
+
+**The best scorer depends on the manipulation.** Against a single metric, max|z|
+— the simplest scorer, and the baseline the others have to beat — is
+competitive and the isolation forests are last. Against a coordinated
+manipulation across four variables the order reverses: the forests recover
+**2.3× max|z|** (21.1% against 9.3% of injected targets, 1% bar, k=3). The case
+a real fixer most resembles is the one max|z| handles worst.
+
+[Full sensitivity tables](results/phase2.md)
+
+Two limits. The population is observed, not certified-clean, so base rates are
+upper bounds on the false-positive rate. And these measure sensitivity to
+_simulated_ manipulation — nothing here is validated against a confirmed case.
+
 ## Stage rule
 
 Each stage reads only the output of the one before it:
@@ -17,10 +37,14 @@ Each stage reads only the output of the one before it:
 | `analysis/`       | marts                         | figures, tables, findings      |
 
 The dimension files are read in place; only the event data justified a
-materialisation stage. Events need kloppy to decode them to a typed parquet layer before dbt sees them. dbt reads dimensions — players, teams, referees, coaches, competitions — in place. From there both paths are the same: staging models flatten and type-repair them, and the marts are built in duckdb, which is all analysis ever reads.
+materialisation stage. Events need kloppy to decode them to a typed parquet
+layer before dbt sees them. dbt reads dimensions — players, teams, referees,
+coaches, competitions — in place. From there both paths are the same: staging
+models flatten and type-repair them, and the marts are built in duckdb, which is
+all analysis ever reads.
 
-**Nothing in `analysis/` touches raw data — a missing column required by analaysis requires an update to the 
-dbt model, not a backwards reach.**
+**Nothing in `analysis/` touches raw data — a missing column means a missing dbt
+model, not a backwards reach.**
 
 the warehouse should always be the source of
 truth -- avoiding invisible definition drift.
@@ -49,9 +73,9 @@ Separately, dbt writes each layer to its own schema (`main_staging`,
 `main_intermediate`, `main_marts`), so "analysis reads marts only" is a property
 of the database rather than a convention.
 
-## Prerequisites
+## Environment
 
-[pixi](https://pixi.sh) manages the environment, including Python itself, so it
+Two routes. **pixi** is the supported one — it provisions Python itself, so it
 cannot be installed from this repository:
 
 ```bash
@@ -60,18 +84,38 @@ brew install pixi                            # macOS, via Homebrew
 winget install prefix-dev.pixi               # Windows
 ```
 
-Alternatively `pip install -e ".[warehouse,analysis]"` into an environment you
-manage yourself. CI exercises that path on every push, so it is known to resolve.
-
-## Install
-
 ```bash
 pixi install
-pixi run hooks-install   # once per clone: installs the pre-commit hook
+pixi run hooks-install   # once per clone: installs the git hooks
 ```
 
-This provisions the conda environment and installs the package itself in editable
-mode, which puts the console scripts on your `PATH`.
+**Or pip**, into an environment you manage yourself. CI takes this route on every
+push, so it is known to resolve:
+
+```bash
+pip install -e ".[warehouse,analysis,dev]"
+export DBT_PROJECT_DIR=warehouse DBT_PROFILES_DIR=warehouse
+pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+The two exports are what `[activation.env]` sets for you under pixi; dbt will not
+find `warehouse/` without them.
+
+Either way the package installs editable, which puts the console scripts on your
+`PATH`. The pixi tasks are shorthand for those scripts, and nothing depends on
+them:
+
+| pixi task           | equivalent                      |
+| ------------------- | ------------------------------- |
+| `pixi run fetch`    | `fis-fetch && fis-gen-dbt-docs` |
+| `pixi run ingest`   | `fis-ingest`                    |
+| `pixi run build`    | `dbt build`                     |
+| `pixi run test`     | `pytest -m 'not slow'`          |
+| `pixi run test-all` | `pytest`                        |
+| `pixi run lint`     | `ruff check src`                |
+| `pixi run hooks`    | `pre-commit run --all-files`    |
+
+`pixi run build` chains fetch and ingest first; run them in that order by hand.
 
 ## Quick start
 
@@ -80,12 +124,7 @@ fis-fetch      # download the dataset  (~255 MiB, 1941 matches)
 fis-ingest     # convert JSON -> parquet
 ```
 
-Or via pixi tasks, without activating the environment:
-
-```bash
-pixi run fetch
-pixi run ingest
-```
+Or `pixi run fetch` / `pixi run ingest`, without activating the environment.
 
 Both are idempotent: re-running skips work already done **by the current
 pipeline**. Change the ingest code, the kloppy version or the pinned dataset
@@ -336,10 +375,10 @@ pixi run build         # dbt build
 pixi run dbt <cmd>     # anything else: dbt ls, dbt test, dbt show ...
 ```
 
-dbt lives in the pixi environment, so reach it with `pixi run` or from inside
-`pixi shell` — there is no dbt on your `PATH` otherwise. `DBT_PROJECT_DIR` and
-`DBT_PROFILES_DIR` are set in `[activation.env]`, so dbt finds `warehouse/`
-without any flags.
+Under pixi, reach dbt with `pixi run` or from inside `pixi shell`; on the pip
+route it is already on your `PATH`. Either way dbt finds `warehouse/` from
+`DBT_PROJECT_DIR` and `DBT_PROFILES_DIR` — set by `[activation.env]` under pixi,
+exported by hand otherwise.
 
 ### Where the warehouse looks for data
 
@@ -499,6 +538,25 @@ clearances are already in the sum and one touch would otherwise count twice.
 Naming the host rather than filtering it means a new pass or defensive metric
 meets the distinction instead of inheriting the double-count.
 
+### Why these metrics
+
+Grounded in Ellens (2019): fixing showed clearest in defenders, and positional
+metrics carried it better than event-based ones — players moved upfield, further
+from their position centroid, with more lateral spread, stretching the defensive
+line.
+
+Hence three of six metrics defensive, four of five injection mechanisms
+defensive, and `relocate_upfield` moving touches out of the defensive third
+rather than degrading a count.
+
+Motivation for what we inject, not support for what we measure: a Research
+Master's thesis, not peer-reviewed, thesis-scale sample.
+
+> Ellens, S. (2019). _Can we catch the crooks: examining performance metrics of
+> match-fixing association football players._ Research Master thesis, Institute
+> for Health and Sport, Victoria University, Melbourne, Australia. 88 pp.
+> <https://vuir.vu.edu.au/40593/>
+
 ### What the residual vector leaves out
 
 `crosses/90` is excluded from the v1 residual vector: a MAD z-score overstates
@@ -515,6 +573,12 @@ tail at about 3.2.
 
 `crosses` remains in the mart as a count. It is the per-90 residual that is
 withdrawn, not the measurement.
+
+**Position.** Ellens's positional metrics need tracking data — centroid distance
+and lateral spread cannot be derived from events. The proxies here are
+`touches_in_defensive_third_per_90` and `mean_action_x`, which is why
+`relocate_upfield` moves touches rather than the player. Tracking data is a
+derived requirement, not a nice-to-have.
 
 ### Open questions
 
@@ -578,8 +642,11 @@ pixi run test            # fast tests
 pixi run test-all        # adds the slow pass over all 1941 matches
 ```
 
-Tests needing the dataset skip themselves when it is absent, so `pixi run test`
-works on a fresh clone. CI runs them that way — what still executes there is the
+Or the underlying commands directly — see the table under
+[Environment](#environment).
+
+Tests needing the dataset or a built warehouse skip themselves when it is
+absent, so the suite works on a fresh clone. CI runs them that way — what still executes there is the
 check that our period mapping agrees with kloppy's, which is the one guarding
 against a silent change to ingested data.
 
@@ -643,26 +710,3 @@ a policy decision rather than an estimator threshold), and every remaining
 hyperparameter estimated rather than asserted. `fis-report` renders the
 sensitivity tables to markdown; `fis-baseline` publishes
 `fct_player_match_flags`.
-
-## Validation
-
-One full-population sensitivity campaign has been run (2026-08-26: 43,993
-scoreable player-matches, 2,140 players; eight scorers against five single
-mechanisms plus a coordinated four-channel injection, dose calibrated in
-per-player sigma). Two headline results:
-
-- **The scorer ordering flips with the threat model.** Against a single-metric
-  manipulation the shipped max|z| rule is competitive and the isolation
-  forests are last; against the coordinated injection the forests recover
-  **2.3× the shipped rule** (21.1% vs 9.3% of injected targets at the 1% bar,
-  k=3). Against the manipulation a real fixer most resembles, the shipped rule
-  is the weakest scorer tested.
-
-[Full sensitivity tables](results/phase2.md) — regenerated by `fis-report`
-from a saved results parquet, so the tables re-render without re-running the
-analysis.
-
-The caveat that survives: the population is observed, not certified-clean, so
-base rates are upper bounds on false-positive rate — and these numbers measure
-sensitivity to _simulated_ manipulation. None of this is validated against a
-confirmed real case.
