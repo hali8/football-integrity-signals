@@ -44,14 +44,14 @@ def main() -> int:
     if not REPORT.exists():
         return 0
     _reexec_in_project_env()
-    from fis.analysis.report import freshness
+    from fis.analysis.report import STALE_MARKER, freshness
 
     text = REPORT.read_text(encoding="utf-8")
     state, detail = freshness(text)
     if state == "fresh":
         return 0
 
-    if "**These numbers are stale.**" in text:
+    if STALE_MARKER in text:
         # Labelled and deferred rather than silently wrong -- that is the
         # condition the guard exists to prevent, so it is satisfied.
         print(f"{REPORT}: {state}, but banded as stale -- allowed")

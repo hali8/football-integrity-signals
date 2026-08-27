@@ -64,8 +64,10 @@ MIN_MATRIX_PLAYERS = 10
 #: RENDER hash only this module. They fail differently -- see freshness().
 ANALYSIS_STAMP = "fis-analysis"
 RENDER_STAMP = "fis-render"
+#: The one string both the banner and the pre-push hook test for.
+STALE_MARKER = "These numbers are stale"
 STALE_BANNER = (
-    "> **⚠ These numbers are stale.** They do not describe the current detector. "
+    f"> **⚠ {STALE_MARKER}.** They do not describe the current detector. "
     "Regenerate with `fis-report --forest --jobs -1`.\n"
 )
 
@@ -755,7 +757,7 @@ def _mark_stale(target: Path, state: str) -> int:
         print(f"{target}: {state}; no stale banner needed")
         return 0
     text = target.read_text(encoding="utf-8")
-    if STALE_BANNER.splitlines()[0] not in text:
+    if STALE_MARKER not in text:
         head, _, rest = text.partition("# Phase 2 — injection sensitivity\n")
         target.write_text(
             head + "# Phase 2 — injection sensitivity\n\n" + STALE_BANNER + rest, encoding="utf-8"
