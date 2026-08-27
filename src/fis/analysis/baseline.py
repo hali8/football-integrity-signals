@@ -320,8 +320,7 @@ def hyperparameters(frame: pd.DataFrame, jobs: int = -1) -> dict:
         delayed(scale_ratio)(groups[position], metric) for position, metric in pairs
     )
     rates, spread = {}, {}
-    for metric in PROPORTIONS:
-        successes, attempts = PROPORTIONS[metric]
+    for metric, (successes, attempts) in PROPORTIONS.items():
         for position, group in groups.items():
             total = group[attempts].sum()
             rates[(position, metric)] = group[successes].sum() / total if total > 0 else np.nan
@@ -418,7 +417,7 @@ def residuals(
 
         if metric in PROPORTIONS:
 
-            def per_position(table: dict, default: float = np.nan) -> np.ndarray:
+            def per_position(table: dict, default: float = np.nan, metric=metric) -> np.ndarray:
                 return (
                     frame["position_code"]
                     .map({p: table.get((p, metric), default) for p in codes})
@@ -452,7 +451,7 @@ def residuals(
 
 
 def flag(frame: pd.DataFrame, rate: float = DEFAULT_FLAG_RATE) -> pd.DataFrame:
-    """Flag ``rate`` of scoreable rows: highest ``max_abs_z``, sigma-corroborated."""
+    """Flag ``rate`` of scoreable rows: the highest ``max_abs_z``, plain quantile."""
     if not 0 < rate < 1:
         raise ValueError(f"flag rate must be between 0 and 1, got {rate}")
     frame = frame.copy()
@@ -527,8 +526,7 @@ def main(argv: list[str] | None = None) -> int:
         warehouse.publish(FLAGS, flagged)
         print(f"  wrote {FLAGS}: {len(flagged):,} rows, {len(flagged.columns)} columns")
 
-    # Ranked by z, but only rows sigma corroborates -- the review list, not
-    # a diagnostic of what the corroboration rejected.
+    # The review list: the flagged rows, ranked by the z that flagged them.
     top = (
         flagged[flagged["is_flagged"]]
         .sort_values("max_abs_z", ascending=False)

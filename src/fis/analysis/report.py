@@ -78,10 +78,14 @@ STALE_BANNER = (
 )
 
 
-def _stamps() -> dict[str, str]:
-    """Current hashes for the two things a report depends on."""
+def _stamps(stale: bool = False) -> dict[str, str]:
+    """Current hashes for the two things a report depends on.
+
+    ``stale`` poisons the analysis stamp so a report rendered from rejected
+    results cannot pass --check afterwards.
+    """
     return {
-        ANALYSIS_STAMP: heldout._code_fingerprint((injection_test,)),
+        ANALYSIS_STAMP: "stale" if stale else heldout._code_fingerprint((injection_test,)),
         RENDER_STAMP: heldout._code_fingerprint((sys.modules[__name__],)),
     }
 
@@ -123,12 +127,12 @@ def _fold(title: str, body: str) -> str:
 
 def _context(scored: pd.DataFrame, rates: tuple[float, ...], headline) -> str:
     """Provenance, so the first grid is not the first thing a reader sees."""
-    from datetime import date
+    from datetime import UTC, datetime
 
     mechanism, severity = headline
     bars = " and ".join(f"{r:.0%}" for r in sorted(rates))
     return (
-        f"`fis-report`, {date.today().isoformat()}. "
+        f"`fis-report`, {datetime.now(UTC).date().isoformat()}. "
         f"{len(scored):,} player-matches / {scored['player_id'].nunique():,} players; "
         f"severity ladder k = {injection_test.SEVERITIES}; bars at {bars}; "
         f"agreement matrices on `{mechanism}:{severity:g}`. "
@@ -150,24 +154,28 @@ def headline_summary(stats: pd.DataFrame, low: float, headline) -> str:
         ]
         return row.iloc[0] if len(row) and np.isfinite(row.iloc[0].recovery) else None
 
+    # Every unique scorer, not a chosen four: showing both forests while
+    # showing one of the two mahalanobis scorers made the omission look like a
+    # verdict. The normalised variants stay out -- they rank the same fits.
+    tallies = [x for x in EVERY_TALLY if not x.endswith("_norm")]
     table = [
         f"| | single metric (`{single}`) | coordinated (all four) |",
         "|---|---:|---:|",
     ]
-    for tally, label in (
-        ("max", "max\\|z\\|"),
-        ("mahalanobis_res", "mahalanobis_res"),
-        ("forest", "forest"),
-        ("forest_res", "forest_res"),
-    ):
+
+    def cell(r) -> str:
+        if r is None:
+            return "n/a"
+        auc = f", auc {r.auc:.3f}" if np.isfinite(r.auc) else ""
+        return f"{int(r.recovered):,}/{int(r.n):,} ({r.recovery:.1%}{auc})"
+
+    for tally in tallies:
         a, b = pick(tally, single), pick(tally, mechanism)
         if a is None and b is None:
             continue
-
-        def cell(r) -> str:
-            return f"{r.recovery:.1%} ±{r.recovery_se:.1%}" if r is not None else "n/a"
-
+        label = "max\\|z\\|" if tally == "max" else tally
         table.append(f"| {label} | {cell(a)} | {cell(b)} |")
+
     tail = (
         "The forests are weakest against a single metric and strongest against the coordinated one."
     )
@@ -177,11 +185,27 @@ def headline_summary(stats: pd.DataFrame, low: float, headline) -> str:
             f" On the coordinated injection the forest recovers "
             f"**{forest.recovery / univariate.recovery:.1f}× max|z|**."
         )
+    # Recovery is a count past one cut; AUC ranks the whole distribution. When
+    # they disagree the headline has to say so, or it reports the flattering one.
+    scored = [(x, pick(x, mechanism)) for x in tallies]
+    scored = [(x, r) for x, r in scored if r is not None and np.isfinite(r.auc)]
+    if scored:
+        by_bar = max(scored, key=lambda pair: pair[1].recovery)
+        by_rank = max(scored, key=lambda pair: pair[1].auc)
+        if by_bar[0] != by_rank[0]:
+            tail += (
+                f" That is a statement about the bar, not about ranking: `{by_rank[0]}` "
+                f"ranks perturbed rows above clean ones more reliably (auc "
+                f"{by_rank[1].auc:.3f} against `{by_bar[0]}`'s {by_bar[1].auc:.3f}), while "
+                f"`{by_bar[0]}` moves fewer rows further past the cut."
+            )
     return "\n".join(
         [
             "\n## Headline\n",
-            "**The best scorer depends on the manipulation** — recovery at the "
-            f"{low:.0%} bar, k={severity:g}:",
+            (
+                "**The best scorer depends on the manipulation** — recovery at the "
+                f"{low:.0%} bar, k={severity:g}:"
+            ),
             "",
             *table,
             "",
@@ -242,16 +266,13 @@ def _plot_recovery(
             r = rows[rows.tally == tally].sort_values("severity")
             if r.empty:
                 continue
-            ax.errorbar(
+            ax.plot(
                 r["severity"],
                 r["recovery"] * 100,
-                yerr=r["recovery_se"] * 100,
                 color=SERIES_COLOR[tally],
                 linewidth=2,
                 marker="o",
                 markersize=6,
-                capsize=2,
-                elinewidth=1,
                 label=tally,
             )
             ends.append((r.iloc[-1]["severity"], r.iloc[-1]["recovery"] * 100, tally))
@@ -272,8 +293,11 @@ def _plot_recovery(
             )
         ax.set_title(mech, fontsize=10, color=_INK)
         ax.set_xlabel("severity k", fontsize=9, color=_INK2)
+        ax.set_ylabel("targets recovered (%)", fontsize=9, color=_INK2)
+        # sharey keeps the panels comparable but strips every inner panel's tick
+        # labels; put them back, or a panel read on its own has no scale.
+        ax.tick_params(labelleft=True)
         ax.margins(x=0.18)
-    axes[0].set_ylabel("targets recovered (%)", fontsize=9, color=_INK2)
     axes[0].legend(frameon=False, fontsize=8, labelcolor=_INK2)
     _save_svg(fig, path)
     plt.close(fig)
@@ -332,7 +356,7 @@ def detection_section(
     )
     table = _fold("raw table", detection_table(per_rate, tallies, title))
     if plots_dir is None:
-        return "\n".join([lead, table])
+        return f"{lead}\n{table}"
     stats = per_rate[min(per_rate)]
 
     def peak(mech: str) -> float:
@@ -377,10 +401,14 @@ def detection_table(
     low, high = min(per_rate), max(per_rate)
     base = per_rate[low]
     lines = [
-        "max|z| is the simplest scorer, carried in both tables as the baseline "
-        "the others have to beat.\n",
-        f"| scorer | injection | k | delivered | n | dosed | auc | clipped "
-        f"| recovery @{low:.0%} | recovery @{high:.0%} | collateral |",
+        (
+            "max|z| is the simplest scorer, carried in both tables as the baseline "
+            "the others have to beat.\n"
+        ),
+        (
+            f"| scorer | injection | k | delivered | n | dosed | auc | clipped "
+            f"| recovery @{low:.0%} | recovery @{high:.0%} | collateral |"
+        ),
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for tally in tallies:
@@ -401,12 +429,12 @@ def detection_table(
                 """Attempted-target rate, then the same numerator over the rows
                 the injection actually moved, then in brackets how many rows
                 could not reach the k this row is labelled with."""
-                out = f"{_pct(cell.recovery)} ±{_pct(cell.recovery_se, 4)}"
+                out = f"{int(cell.recovered):,}/{int(cell.n):,} ({_pct(cell.recovery)})"
                 if np.isfinite(cell.recovery_dosed):
-                    # Its interval matters MORE than the attempted rate's: the
-                    # denominator is smaller, so it is the noisier of the two.
-                    # Bare, it would read as the firmer measurement.
-                    out += f" → {_pct(cell.recovery_dosed)} ±{_pct(cell.recovery_dosed_se, 4)}"
+                    out += (
+                        f" → {int(cell.recovered_dosed):,}/{int(cell.n_dosed):,}"
+                        f" ({_pct(cell.recovery_dosed)})"
+                    )
                 if getattr(cell, "n_short", 0):
                     out += f" [{int(cell.n_short):,} short]"
                 return out
@@ -578,8 +606,10 @@ def detection_agreement(
 
     everyone = set(block["player_id"])
     out = [
-        "\nCell = `|A∩B|/|A|` / Jaccard. Row A, column B: of the players A caught, "
-        "the share B also caught. Asymmetric on purpose.",
+        (
+            "\nCell = `|A∩B|/|A|` / Jaccard. Row A, column B: of the players A caught, "
+            "the share B also caught. Asymmetric on purpose."
+        ),
     ]
     if plots_dir is None:
         out.append(block_for(everyone, "all positions"))
@@ -637,6 +667,7 @@ def build(
     headline: tuple[str, float],
     rates: tuple[float, ...] = RATES,
     plots_dir: Path | None = None,
+    stale: bool = False,
 ) -> str:
     """Every table, from one results frame."""
     bars = {r: heldout.production_bars(scored, census, r) for r in rates}
@@ -652,7 +683,7 @@ def build(
     )
     mechanism, severity = headline
     parts = [
-        *(f"<!-- {k}={v} -->" for k, v in _stamps().items()),
+        *(f"<!-- {k}={v} -->" for k, v in _stamps(stale).items()),
         "# Phase 2 — injection sensitivity\n",
         _context(scored, rates, headline),
         headline_summary(per_rate[min(rates)], min(rates), headline),
@@ -707,50 +738,70 @@ def caption(scored: pd.DataFrame, census: pd.DataFrame, rates: tuple[float, ...]
     """What a reader needs to not over-read the tables."""
     return "\n".join(
         [
-            f"\n- Population {len(scored):,} rows / {scored['player_id'].nunique():,} players. "
-            "**Observed, not certified-clean**, so base rates are upper bounds on FPR.",
+            (
+                f"\n- Population {len(scored):,} rows / {scored['player_id'].nunique():,} players. "
+                "**Observed, not certified-clean**, so base rates are upper bounds on FPR."
+            ),
             # The evaluated cut is a dbt var, not a Python constant, so it is read
             # off the frame -- writing 30 into the string would misstate the
             # population the moment the mart is rebuilt with a different value.
-            f"- Eligibility: ≥{baseline.BASELINE_MIN_MINUTES:g} min baselines, "
-            f"≥{scored['minutes_played'].min():g} min evaluated "
-            f"(the mart's cut, read off this frame), "
-            f"≥{baseline.MIN_PLAYER_MATCHES:g} appearances.",
+            (
+                f"- Eligibility: ≥{baseline.BASELINE_MIN_MINUTES:g} min baselines, "
+                f"≥{scored['minutes_played'].min():g} min evaluated "
+                f"(the mart's cut, read off this frame), "
+                f"≥{baseline.MIN_PLAYER_MATCHES:g} appearances."
+            ),
             # Derived, not quoted: the range is a measurement of one population and
             # would go quietly wrong the moment the mart moves. Costs ~0.3s.
             _shrinkage_note(scored),
-            "- **Two denominators.** `recovery` is over ALL attempted targets; the figure after "
-            "`→` is the same numerator over `dosed` — rows the injection actually moved. A "
-            "requested dose that rounds below one event is a real draw from the treatment and "
-            "stays in the first; conditioning only on non-zero draws would select on the "
-            "randomisation. **On the coordinated row it reads n/a**: 'some channel moved' is "
-            "true on nearly every row and would imply a correction that was not made — there "
-            "the per-channel `acted` shares carry it instead.",
-            "- **Recovery** is crossing the bar *because of* the injection (below when clean, "
-            "above after). It is not the same as caught, which counts rows already flagged "
-            "before anything was injected. `±` is an Agresti-Coull SE, which does not collapse "
-            "to zero on an empty cell — a 0.0% recovery means no events were seen, not that the "
-            "rate was measured to be zero. At k=0 the zero IS exact and its SE is 0.",
-            "- **AUC is threshold-free**, so it is reported once rather than per rate. Its "
-            "no-skill line is the **k=0 row, not 0.5** — median-selected targets fire the sigma "
-            "gate far less often than the population does.",
-            "- **Do not compare mechanism rows as if they were equally injected.** `delivered` "
-            "is the dose that actually landed, and it varies by mechanism: `pass_completion` "
-            "delivers essentially all of what is asked and clips on no rows, while "
-            "`remove_defensive` clips on most rows and lands under half. A mechanism that looks "
-            "harder to detect may simply have been injected more weakly.",
-            "- **Clipped** is the share of injected targets whose dose was TRUNCATED — the "
-            "mechanism ran out of successes to relabel, or actions to remove, or touches to "
-            "relocate. Those rows received *less* than was asked for, so a miss there is "
-            "delivery rather than detection. Read it beside the achieved dose, which says how "
-            "much was actually delivered on average.",
-            "- Detection agreement is **one condition and the primary bar only**. Agreement rises with "
-            "set size alone, so read the `caught` counts under each grid before reading the "
-            "percentages. Note that k is split across channels on the coordinated condition "
-            "(`compose` divides by √parts), so `correlated:3.0` delivers 1.5 sd per channel — "
-            "the middle of the ladder per channel, not the extreme the label suggests.",
-            f"- Position grids resting on fewer than {MIN_MATRIX_PLAYERS} players report a "
-            "count instead of percentages. Below that, one player moves a cell by ten points.",
+            (
+                "- **Two denominators.** `recovery` is over ALL attempted targets; the figure after "
+                "`→` is the same numerator over `dosed` — rows the injection actually moved. A "
+                "requested dose that rounds below one event is a real draw from the treatment and "
+                "stays in the first; conditioning only on non-zero draws would select on the "
+                "randomisation. **On the coordinated row it reads n/a**: 'some channel moved' is "
+                "true on nearly every row and would imply a correction that was not made — there "
+                "the per-channel `acted` shares carry it instead."
+            ),
+            (
+                "- **Recovery** is crossing the bar *because of* the injection (below when clean, "
+                "above after). It is not the same as caught, which counts rows already flagged "
+                "before anything was injected. Rates print as **recovered / targets**: the targets "
+                "are the whole population — one injected row per player, chosen before anything was "
+                "perturbed — so there is no sample and no interval to put on them."
+            ),
+            (
+                "- **AUC is threshold-free**, so it is reported once rather than per rate. It is "
+                "paired — each injected row against its own clean score — so the no-skill line is "
+                "**exactly 0.5**, and the k=0 row measures that rather than setting it."
+            ),
+            (
+                "- **Do not compare mechanism rows as if they were equally injected.** `delivered` "
+                "is the dose that actually landed, and it varies by mechanism: `pass_completion` "
+                "delivers essentially all of what is asked and clips on no rows, while "
+                "`remove_defensive` clips on most rows and lands under half. A mechanism that looks "
+                "harder to detect may simply have been injected more weakly."
+            ),
+            (
+                "- **Clipped** is the share of injected targets whose dose was TRUNCATED — the "
+                "mechanism ran out of successes to relabel, or actions to remove, or touches to "
+                "relocate. Those rows received *less* than was asked for, so a miss there is "
+                "delivery rather than detection. Read it beside the achieved dose, which says how "
+                "much was actually delivered on average."
+            ),
+            (
+                "- Detection agreement is **one condition and the primary bar only**. Agreement rises with "
+                "set size alone, so read the `caught` counts under each grid before reading the "
+                "percentages. Note that k is split across channels on the coordinated condition "
+                "(`compose` spends the quadratic budget equally until a channel reaches its "
+                "capacity; capped channels take less and the remainder is redistributed to the "
+                "uncapped ones, which therefore take MORE than k/√parts. The total reaches k "
+                "unless every channel caps) — so a channel is not simply at k/√parts."
+            ),
+            (
+                f"- Position grids resting on fewer than {MIN_MATRIX_PLAYERS} players report a "
+                "count instead of percentages. Below that, one player moves a cell by ten points."
+            ),
             "- Bars are derived from this population at run time, never hardcoded.",
         ]
     )
@@ -776,8 +827,8 @@ def _mark_stale(target: Path, state: str) -> int:
     readme = Path("README.md")
     if readme.exists():
         rt = readme.read_text(encoding="utf-8")
-        marker = "## Validation"
-        if marker in rt and "**These numbers are stale.**" not in rt:
+        marker = "## Output / analysis summary"
+        if marker in rt and STALE_MARKER not in rt:
             readme.write_text(
                 rt.replace(marker, marker + "\n\n" + STALE_BANNER, 1), encoding="utf-8"
             )
@@ -821,8 +872,10 @@ def main(argv: list[str] | None = None) -> int:
         default="correlated:3.0",
         help="mechanism:severity keying the agreement matrices. The coordinated "
         "case by default: it is what a manipulator most resembles, and "
-        "compose() divides k by sqrt(parts), so correlated:3.0 is 1.5 sd per "
-        "CHANNEL -- not the extreme its label suggests. Re-pick it after a "
+        "compose() spends the quadratic budget equally until a channel reaches its "
+        "capacity, then redistributes the remainder to the uncapped channels -- so a "
+        "capped channel takes less than k/sqrt(parts) and an uncapped one takes more. "
+        "Re-pick it after a "
         "run if the grids are uninformative; the matrices need no fitting, "
         "so a re-render is seconds against a cached census.",
     )
@@ -880,16 +933,19 @@ def main(argv: list[str] | None = None) -> int:
         scored = scored[scored["player_id"].isin(set(keep))]
 
     cache = Path(args.census) if args.census else None
+    settings = heldout.scoring_config(forest=args.forest)
+    # The results also turn on --seed, which the census does not.
+    run_settings = heldout.results_config(settings, args.seed)
     if cache is not None and cache.exists():
         if args.stale_ok:
             census = pd.read_parquet(cache).rename(columns=LEGACY_RENAMES)
         else:
-            census = heldout.read_census(cache, scored)
+            census = heldout.read_census(cache, scored, config=settings)
     else:
         census = heldout.score_all(scored, forest=args.forest, jobs=args.jobs)
         if cache is not None:
             cache.parent.mkdir(parents=True, exist_ok=True)
-            heldout.write_census(cache, census, scored)
+            heldout.write_census(cache, census, scored, config=settings)
     path = Path(args.out) if args.out else paths.report_dir() / "phase2.md"
     saved = Path(args.results) if args.results else path.with_suffix(".parquet")
     if saved.exists():
@@ -904,7 +960,9 @@ def main(argv: list[str] | None = None) -> int:
             results["scorer"] = results["scorer"].replace(LEGACY_RENAMES)
             print(f"reading {saved} WITHOUT the stamp check; output banded stale")
         else:
-            results = heldout.read_stamped(saved, scored, what="results", extra=(injection_test,))
+            results = heldout.read_stamped(
+                saved, scored, what="results", extra=(injection_test,), config=run_settings
+            )
         print(f"re-rendering from {saved}; analysis skipped")
     else:
         # The coordinated multi-variable injection is part of the condition
@@ -922,9 +980,16 @@ def main(argv: list[str] | None = None) -> int:
             jobs=args.jobs,
         )
         saved.parent.mkdir(parents=True, exist_ok=True)
-        heldout.write_stamped(saved, results, scored, extra=(injection_test,))
+        heldout.write_stamped(saved, results, scored, extra=(injection_test,), config=run_settings)
     path.parent.mkdir(parents=True, exist_ok=True)
-    rendered = build(scored, census, results, (name, float(dose)), plots_dir=path.parent / "plots")
+    rendered = build(
+        scored,
+        census,
+        results,
+        (name, float(dose)),
+        plots_dir=path.parent / "plots",
+        stale=args.stale_ok,
+    )
     if args.stale_ok:
         head, _, rest = rendered.partition("# Phase 2 — injection sensitivity\n")
         rendered = head + "# Phase 2 — injection sensitivity\n\n" + STALE_BANNER + rest
@@ -932,7 +997,8 @@ def main(argv: list[str] | None = None) -> int:
     # A fresh render answers the banner, so it must also remove it -- a stale
     # warning left on current numbers is its own kind of wrong.
     readme = Path("README.md")
-    if readme.exists() and STALE_BANNER in readme.read_text(encoding="utf-8"):
+    fresh_enough = not args.stale_ok
+    if fresh_enough and readme.exists() and STALE_BANNER in readme.read_text(encoding="utf-8"):
         readme.write_text(
             readme.read_text(encoding="utf-8").replace("\n\n" + STALE_BANNER, "", 1),
             encoding="utf-8",
