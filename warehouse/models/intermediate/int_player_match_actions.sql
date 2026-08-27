@@ -89,11 +89,8 @@ categorised as (
             -- counted as both a duel and an interception.
             when parent_event_id is null and subevent_id in {{ duel_defensive }}
                 then 'defensive_duel'
-            -- Wyscout files a won ball under what the player did NEXT, so an
-            -- attacking duel carrying the interception tag is a ball won and
-            -- then carried. The tag wins over the subevent here: those rows are
-            -- preceded by the opponent holding the ball far more often than
-            -- untagged attacking duels are.
+            -- A ball won and then carried is filed as an attacking duel, so
+            -- here the interception tag outranks the subevent. See the README.
             when parent_event_id is null and subevent_id = {{ duel_attacking }}
                 and list_contains(wyscout_tags, 1401) then 'interception_as_duel'
             when parent_event_id is null and subevent_id = {{ duel_attacking }}

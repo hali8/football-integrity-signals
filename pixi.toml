@@ -18,8 +18,11 @@ ingest = { cmd = "fis-ingest", depends-on = ["fetch"] }
 dbt-debug = "dbt debug"
 build = { cmd = "dbt build", depends-on = ["ingest"] }
 dbt = "dbt"
-# Includes the stage-rule import bans under src/fis/analysis/.
-lint = "ruff check src"
+# The WHOLE tree, as the hook and CI do -- `ruff check src` once passed while
+# scripts/ was failing. Includes the stage-rule import bans under analysis/.
+lint = "ruff check . && ruff format --check ."
+# What CI will say, in one command: every hook over every file, then the tests.
+check = { cmd = "pytest -m 'not slow'", depends-on = ["hooks"] }
 # Run once per clone: installs .git/hooks/pre-commit.
 hooks-install = "pre-commit install --hook-type pre-commit --hook-type pre-push"
 hooks = "pre-commit run --all-files"

@@ -205,10 +205,8 @@ def _single_writer(live: Path):
         try:
             import fcntl
         except ImportError:
-            # Windows: msvcrt is the equivalent exclusive, non-blocking lock, and
-            # is likewise released when the process dies. Untested on that
-            # platform -- no runner for it -- but a no-op would leave the
-            # contention hole open on a supported install route.
+            # Windows equivalent, also released when the process dies.
+            # Untested -- no runner for that platform.
             import msvcrt
 
             try:

@@ -731,10 +731,8 @@ def run(
                     )
                 ztrain = cz[keep]
                 ztrain = ztrain[~np.isnan(ztrain).any(axis=1)]
-                # The SAME fallback the census uses. Without it a player too
-                # thin for his own residual fit scores NaN here and a pool-fitted
-                # number there, so the table compares a score against a bar drawn
-                # from a differently fitted population.
+                # The SAME fallback the census uses, or the score and the bar
+                # come from differently fitted populations.
                 zfit = pool_z
                 if len(ztrain) >= 2:
                     zfit = heldout._Fit(

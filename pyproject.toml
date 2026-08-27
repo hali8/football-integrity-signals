@@ -65,10 +65,8 @@ packages = ["src/fis"]
 include = ["src/fis", "warehouse", "README.md", "pyproject.toml"]
 
 [tool.ruff]
-# No `select`: the enforced rules are ruff's DEFAULT set for the PINNED version,
-# which is why the version is pinned in three files and a test refuses to let
-# them diverge. Bumping ruff therefore changes the gate deliberately -- the set
-# went from 62 rules to 416 between 0.9 and 0.16 without anyone choosing it.
+# No `select`: the gate is ruff's DEFAULT set for the PINNED version, which is
+# why three files pin it and a test refuses to let them diverge.
 line-length = 100
 target-version = "py312"
 
