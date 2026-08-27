@@ -22,10 +22,9 @@ manipulation across four variables the order reverses: the forests recover
 **2.1× max|z|** (21.7% against 10.4% of injected targets, 1% bar, k=3). The case
 a real fixer most resembles is the one max|z| handles worst.
 
-That lead belongs to the cut, not to the scorer. At the 5% bar the order
-reverses again — `mahalanobis_res` recovers 44.8% against the forest's 43.7% on
-the same injection — so which scorer wins depends on where the threshold is
-set.
+Which scorer leads depends on the bar as well as the manipulation. At 5% the
+order reverses again — `mahalanobis_res` recovers 44.8% against the forest's
+43.7% on the same injection — so neither dominates.
 
 [Full sensitivity tables](results/phase2.md)
 
