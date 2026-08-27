@@ -21,6 +21,20 @@ import pandas as pd
 import pytest
 
 from fis.analysis import baseline, heldout, injection_test
+from fis.warehouse import WarehouseError
+
+
+@pytest.fixture(scope="session")
+def mart() -> pd.DataFrame:
+    """The built warehouse, or a skip -- CI runs without one.
+
+    Session-scoped so the tests that need real data share one load rather
+    than paying for it each.
+    """
+    try:
+        return baseline.load()
+    except WarehouseError as exc:
+        pytest.skip(f"warehouse not built: {exc}")
 
 
 def _census(rows: int = 12, players: int = 6) -> pd.DataFrame:
@@ -206,7 +220,7 @@ def test_fingerprint_round_trips_through_parquet_metadata(tmp_path):
     pd.testing.assert_frame_equal(reloaded, census)
 
 
-def test_delivered_rate_comes_from_the_clean_population():
+def test_delivered_rate_comes_from_the_clean_population(mart):
     """The asterisk must fire on the gate's ceiling, not on target selection.
 
     Injected rows are median-selected and fire the sigma gate far less often
@@ -214,7 +228,7 @@ def test_delivered_rate_comes_from_the_clean_population():
     result rows measures selection and would asterisk every row, including the
     1% rows the rule reaches perfectly well.
     """
-    frame = baseline.prepare(baseline.load())
+    frame = baseline.prepare(mart)
     scored, _ = baseline.residuals(frame)
     scored = scored[scored["is_scoreable"]]
     census = scored.assign(mahalanobis=0.0, mahalanobis_z=0.0)
@@ -225,22 +239,22 @@ def test_delivered_rate_comes_from_the_clean_population():
     assert at_five < 0.05, "5% is above the gate ceiling, so it must asterisk"
 
 
-def test_ungated_bar_is_not_the_gated_one():
+def test_ungated_bar_is_not_the_gated_one(mart):
     """The gated bar is LOWER, because the gate removes rows after the cut.
     Inheriting it for the ungated tally would look right and be wrong."""
-    frame = baseline.prepare(baseline.load())
+    frame = baseline.prepare(mart)
     scored, _ = baseline.residuals(frame)
     scored = scored[scored["is_scoreable"]]
     bars = heldout.production_bars(scored, scored.assign(mahalanobis=0.0, mahalanobis_z=0.0), 0.01)
     assert bars["max"] < bars["max_ungated"]
 
 
-def test_ungated_bar_delivers_its_nominal_rate():
+def test_ungated_bar_delivers_its_nominal_rate(mart):
     """Ordering is the weak property: a bar that is too high or too low still
     sits above the gated one. What the tally claims is that the bar flags the
     rate on its label, so assert THAT -- otherwise a joint-bar leak reads as a
     plausible percentage that a human has to catch."""
-    frame = baseline.prepare(baseline.load())
+    frame = baseline.prepare(mart)
     scored, _ = baseline.residuals(frame)
     scored = scored[scored["is_scoreable"]]
     census = scored.assign(mahalanobis=0.0, mahalanobis_z=0.0)
@@ -326,7 +340,7 @@ def test_borrow_seed_survives_a_fresh_interpreter():
 
 
 @pytest.mark.slow
-def test_a_row_scores_the_same_through_the_census_and_through_run():
+def test_a_row_scores_the_same_through_the_census_and_through_run(mart):
     """The bar comes from the census and the score comes from run(), so the two
     must fit a given player identically or the table compares a score against a
     threshold derived from a differently-fitted population.
@@ -334,7 +348,6 @@ def test_a_row_scores_the_same_through_the_census_and_through_run():
     This is what a half-applied seed change breaks, and it breaks it invisibly:
     both sides stay internally consistent and only the comparison is wrong.
     """
-    mart = baseline.load()
     frame = baseline.prepare(mart)
     scored, _ = baseline.residuals(frame)
     scored = scored[scored["is_scoreable"]]

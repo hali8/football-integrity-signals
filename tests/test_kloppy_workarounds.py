@@ -57,7 +57,7 @@ EXPECTED_COUNTS = {
 def files() -> dict[str, object]:
     paths = {p.stem: p for p in match_files()}
     if not paths:
-        pytest.skip("dataset not downloaded; run fis-fetch-wyscout")
+        pytest.skip("dataset not downloaded; run fis-fetch")
     return paths
 
 
