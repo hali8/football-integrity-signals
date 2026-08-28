@@ -217,7 +217,7 @@ z
    </g>
    <g id="line2d_18">
     <path d="M 79.73506 200.726437
-L 151.946824 200.726437
+L 151.946824 29.366437
 L 260.264472 29.366437
 " clip-path="url(#p9628e1c26d)" style="fill: none; stroke: #eb6834; stroke-width: 2; stroke-linecap: square"/>
     <defs>
@@ -235,7 +235,7 @@ z
     </defs>
     <g clip-path="url(#p9628e1c26d)">
      <use xlink:href="#m221498b6f1" x="79.73506" y="200.726437" style="fill: #eb6834; stroke: #eb6834"/>
-     <use xlink:href="#m221498b6f1" x="151.946824" y="200.726437" style="fill: #eb6834; stroke: #eb6834"/>
+     <use xlink:href="#m221498b6f1" x="151.946824" y="29.366437" style="fill: #eb6834; stroke: #eb6834"/>
      <use xlink:href="#m221498b6f1" x="260.264472" y="29.366437" style="fill: #eb6834; stroke: #eb6834"/>
     </g>
    </g>
@@ -305,52 +305,52 @@ L 292.759766 209.294437
    </g>
    <g id="legend_1">
     <g id="line2d_21">
-     <path d="M 54.439766 31.277188
-L 62.439766 31.277188
-L 70.439766 31.277188
+     <path d="M 195.731016 96.323937
+L 203.731016 96.323937
+L 211.731016 96.323937
 " style="fill: none; stroke: #2a78d6; stroke-width: 2; stroke-linecap: square"/>
      <g>
-      <use xlink:href="#m87b39bc6f3" x="62.439766" y="31.277188" style="fill: #2a78d6; stroke: #2a78d6"/>
+      <use xlink:href="#m87b39bc6f3" x="203.731016" y="96.323937" style="fill: #2a78d6; stroke: #2a78d6"/>
      </g>
     </g>
     <g id="text_16">
-     <text style="font-size: 8px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #52514e" x="76.839766" y="34.077188" transform="rotate(-0 76.839766 34.077188)">max</text>
+     <text style="font-size: 8px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #52514e" x="218.131016" y="99.123937" transform="rotate(-0 218.131016 99.123937)">max</text>
     </g>
     <g id="line2d_22">
-     <path d="M 54.439766 43.277813
-L 62.439766 43.277813
-L 70.439766 43.277813
+     <path d="M 195.731016 108.324562
+L 203.731016 108.324562
+L 211.731016 108.324562
 " style="fill: none; stroke: #eb6834; stroke-width: 2; stroke-linecap: square"/>
      <g>
-      <use xlink:href="#m221498b6f1" x="62.439766" y="43.277813" style="fill: #eb6834; stroke: #eb6834"/>
+      <use xlink:href="#m221498b6f1" x="203.731016" y="108.324562" style="fill: #eb6834; stroke: #eb6834"/>
      </g>
     </g>
     <g id="text_17">
-     <text style="font-size: 8px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #52514e" x="76.839766" y="46.077813" transform="rotate(-0 76.839766 46.077813)">mahalanobis_res</text>
+     <text style="font-size: 8px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #52514e" x="218.131016" y="111.124562" transform="rotate(-0 218.131016 111.124562)">mahalanobis_res</text>
     </g>
     <g id="line2d_23">
-     <path d="M 54.439766 55.278438
-L 62.439766 55.278438
-L 70.439766 55.278438
+     <path d="M 195.731016 120.325187
+L 203.731016 120.325187
+L 211.731016 120.325187
 " style="fill: none; stroke: #1baf7a; stroke-width: 2; stroke-linecap: square"/>
      <g>
-      <use xlink:href="#m046e1da516" x="62.439766" y="55.278438" style="fill: #1baf7a; stroke: #1baf7a"/>
+      <use xlink:href="#m046e1da516" x="203.731016" y="120.325187" style="fill: #1baf7a; stroke: #1baf7a"/>
      </g>
     </g>
     <g id="text_18">
-     <text style="font-size: 8px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #52514e" x="76.839766" y="58.078438" transform="rotate(-0 76.839766 58.078438)">forest_res</text>
+     <text style="font-size: 8px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #52514e" x="218.131016" y="123.125187" transform="rotate(-0 218.131016 123.125187)">forest_res</text>
     </g>
     <g id="line2d_24">
-     <path d="M 54.439766 67.279062
-L 62.439766 67.279062
-L 70.439766 67.279062
+     <path d="M 195.731016 132.325812
+L 203.731016 132.325812
+L 211.731016 132.325812
 " style="fill: none; stroke: #eda100; stroke-width: 2; stroke-linecap: square"/>
      <g>
-      <use xlink:href="#m26f9c0cba7" x="62.439766" y="67.279062" style="fill: #eda100; stroke: #eda100"/>
+      <use xlink:href="#m26f9c0cba7" x="203.731016" y="132.325812" style="fill: #eda100; stroke: #eda100"/>
      </g>
     </g>
     <g id="text_19">
-     <text style="font-size: 8px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #52514e" x="76.839766" y="70.079062" transform="rotate(-0 76.839766 70.079062)">forest_res_norm</text>
+     <text style="font-size: 8px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #52514e" x="218.131016" y="135.125812" transform="rotate(-0 218.131016 135.125812)">forest_res_norm</text>
     </g>
    </g>
   </g>

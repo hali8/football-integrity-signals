@@ -29,6 +29,15 @@ hooks = "pre-commit run --all-files"
 # The slow marker walks all 1941 matches; skip it for the quick loop.
 test = "pytest -m 'not slow'"
 test-all = "pytest"
+# The tracked report is the OUTPUT of a canonical run, not a copy someone
+# remembered to make. Re-renders from the stamped parquet, so it costs seconds
+# and the stamp refuses results the current code did not produce.
+publish = """fis-report --forest --jobs -1 \
+  --census data/reports/census.parquet \
+  --results data/reports/phase2.parquet \
+  --collateral data/reports/collateral.parquet \
+  --collateral data/reports/collateral-forest.parquet \
+  --out results/phase2.md"""
 
 [dependencies]
 python = "3.12.*"

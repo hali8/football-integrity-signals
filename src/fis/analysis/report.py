@@ -868,8 +868,13 @@ def build(
     plots_dir: Path | None = None,
     stale: bool = False,
     results_stamp: str | None = None,
+    collateral: pd.DataFrame | None = None,
 ) -> str:
-    """Every table, from one results frame."""
+    """Every table, from one results frame.
+
+    ``collateral`` is a SECOND frame, from persistent runs: the held-out design
+    scores only targets, so it cannot measure collateral at all.
+    """
     bars = {r: heldout.production_bars(scored, census, r) for r in rates}
     per_rate = {r: injection_test.cell_statistics(results, bars[r]) for r in rates}
     # "max" is merged in from the scored frame, not a census column, so it must
@@ -917,8 +922,88 @@ def build(
             ),
         )
     )
+    if collateral is not None and len(collateral):
+        parts.append(
+            _fold(
+                "Collateral — what an injection does to the player's OTHER matches",
+                collateral_section(
+                    injection_test.cell_statistics(collateral, bars[primary]), primary
+                ),
+            )
+        )
     parts.append(_fold("Notes", caption(scored, census, rates)))
     return "\n".join(parts)
+
+
+def collateral_section(stats: pd.DataFrame, rate: float) -> str:
+    """What an injection does to the player's OTHER matches.
+
+    A separate section, not a column, because the detection tables come from the
+    held-out design, which scores only targets and so cannot measure this at all.
+    These rows come from persistent runs, where the fixed match stays in the
+    player's history and every other row of his is rescored against a baseline
+    that now contains it.
+    """
+    live = stats[stats.collateral_measurable & (stats.severity > 0)]
+    if live.empty:
+        return "No collateral measured: these results carry no non-target rows."
+
+    def table(block: pd.DataFrame) -> str:
+        out = [
+            "| scorer | injection | k | flagged before | after | net rows | moved | shift (sd) |",
+            "|---|---|---:|---:|---:|---:|---:|---:|",
+        ]
+        seen = None
+        for r in block.itertuples():
+            net = round((r.others_after - r.others_before) * r.n_other)
+            label = f"**{r.tally}**" if r.tally != seen else ""
+            seen = r.tally
+            out.append(
+                f"| {label} | {r.mechanism} | {r.severity:.3g} "
+                f"| {r.others_before:.2%} | {r.others_after:.2%} | {net:+,} "
+                f"| {r.contaminated / r.n_other:.0%} | {r.shift_sd:+.4f} |"
+            )
+        return "\n".join(out)
+
+    # The condition every scorer shares: the forests were run on it alone.
+    shared = live[live.mechanism == "correlated"].sort_values(["tally", "severity"])
+    worst = live.loc[live.shift_sd.idxmin()]
+    down = int((live.shift_sd < 0).sum())
+    rose = live[live.others_after > live.others_before]
+    lifts = rose.tally.value_counts()
+    body = [table(shared)] if not shared.empty else []
+    body.append(
+        f"\nInjecting one match barely moves the rest of the player's history. Over "
+        f"{len(live)} measured conditions the largest median shift is "
+        f"**{worst.shift_sd:+.4f} sd** (`{worst.tally}`, {worst.mechanism} k={worst.severity:.3g}) "
+        f"against a {rate:.0%} bar, and the flagged share of other matches stays within "
+        f"{min(live.others_after):.2%}–{max(live.others_after):.2%} of a {live.others_before.iloc[0]:.2%} "
+        "baseline. Almost nothing crosses."
+    )
+    body.append(
+        f"\nThe shift is downward in {down} of {len(live)} conditions. That is the expected "
+        "direction: leaving a perturbed row in the player's history widens his own scale "
+        "estimate, and a wider spread deflates every other row's z, so contamination makes "
+        "the remaining matches look slightly LESS anomalous rather than more."
+    )
+    if len(lifts):
+        first = lifts.index[0]
+        body.append(
+            f"\nThe flagged share still ticks up in {len(rose)} conditions, "
+            f"{lifts.iloc[0]} of them `{first}` — it reads the MAXIMUM of six per-metric z's, "
+            "so when the perturbed metric's z is deflated the maximum can simply move to "
+            "another metric. The multivariate scorers have no such escape."
+        )
+
+    others = live[live.mechanism != "correlated"]
+    if not others.empty:
+        body.append(
+            _fold(
+                "Every other mechanism (scorers whose run covered the full grid)",
+                table(others.sort_values(["tally", "mechanism", "severity"])),
+            )
+        )
+    return "\n".join(body)
 
 
 def _shrinkage_note(scored: pd.DataFrame) -> str:
@@ -1081,6 +1166,14 @@ def main(argv: list[str] | None = None) -> int:
         "runtime, and it is fingerprint-guarded, so re-rendering a table "
         "costs nothing rather than refitting every row.",
     )
+    parser.add_argument(
+        "--collateral",
+        action="append",
+        default=None,
+        help="parquet from a PERSISTENT run, repeatable. The held-out design "
+        "scores only targets, so collateral needs its own run; these frames fill "
+        "the collateral section and nothing else.",
+    )
     parser.add_argument("--jobs", type=int, default=-1)
     parser.add_argument("--seed", type=int, default=injection_test.SEED)
     parser.add_argument("--forest", action="store_true", help="fit forests (dominates the runtime)")
@@ -1226,6 +1319,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         saved.parent.mkdir(parents=True, exist_ok=True)
         heldout.write_stamped(saved, results, scored, extra=(injection_test,), config=run_settings)
+    collateral = None
+    if args.collateral:
+        frames = [pd.read_parquet(c) for c in args.collateral]
+        collateral = pd.concat(frames, ignore_index=True)
+        print(f"collateral from {len(frames)} run(s): {len(collateral):,} rows")
     path.parent.mkdir(parents=True, exist_ok=True)
     rendered = build(
         scored,
@@ -1235,6 +1333,7 @@ def main(argv: list[str] | None = None) -> int:
         plots_dir=path.parent / "plots",
         stale=args.stale_ok,
         results_stamp=heldout.fingerprint(scored, extra=(injection_test,), config=run_settings),
+        collateral=collateral,
     )
     banner = STALE_BANNER if args.stale_ok else None
     if not canonical:

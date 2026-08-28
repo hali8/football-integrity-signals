@@ -507,3 +507,52 @@ def test_the_experiment_note_maps_five_hidden_variables_over_four_channels():
     ):
         assert variable in note, f"{variable} missing from the map"
     assert note.count("| `relocate_upfield` |") == 1, "the pair belongs to ONE channel"
+
+
+# ------------------------------------------------- collateral section --
+
+
+def _collateral_stats(**over):
+    return {
+        "collateral_measurable": True,
+        "severity": 3.0,
+        "mechanism": "correlated",
+        "others_before": 0.0105,
+        "others_after": 0.0097,
+        "n_other": 41853,
+        "contaminated": 41000,
+        "shift_sd": -0.0147,
+        **over,
+    }
+
+
+def test_every_scorer_is_labelled_not_just_the_first_row():
+    """Labelling on row index blanked every scorer after the first, so a
+    24-row table named one of seven."""
+    stats = pd.DataFrame(
+        [_collateral_stats(tally="forest", severity=k) for k in (1.0, 3.0)]
+        + [_collateral_stats(tally="max", severity=k) for k in (1.0, 3.0)]
+    )
+    out = report.collateral_section(stats, 0.01)
+    assert "**forest**" in out and "**max**" in out, "each scorer must be named once"
+    assert out.count("**forest**") == 1, "and only on its first row"
+
+
+def test_the_direction_claim_counts_cells_rather_than_naming_scorers():
+    """The claim is about how many conditions move down, not which scorers are
+    exceptions -- the earlier wording listed 5 of 7 as exceptions to 'every'."""
+    stats = pd.DataFrame(
+        [
+            _collateral_stats(tally="max", severity=1.0, shift_sd=+0.002),
+            _collateral_stats(tally="max", severity=3.0, shift_sd=-0.01),
+            _collateral_stats(tally="forest", severity=1.0, shift_sd=-0.02),
+        ]
+    )
+    out = report.collateral_section(stats, 0.01)
+    assert "downward in 2 of 3 conditions" in out
+    assert "every scorer but" not in out
+
+
+def test_an_empty_collateral_frame_says_so_rather_than_rendering_a_table():
+    stats = pd.DataFrame([_collateral_stats(collateral_measurable=False)])
+    assert "No collateral measured" in report.collateral_section(stats, 0.01)

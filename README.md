@@ -7,8 +7,6 @@ match, and gives a duckdb/dbt warehouse to build match-integrity signals on top 
 
 ## Output / analysis summary
 
-> **⚠ These numbers are stale.** The analysis code has changed since they were produced, so they may no longer describe the current detector. Regenerate with `fis-report --forest --jobs -1`.
-
 A limited pathfinder — at what level an injected signal can be found in
 aggregate data, with no attempt to account for all correlated factors.
 
@@ -23,23 +21,42 @@ One full-population run: 43,993 player-matches, 2,140 players.
 
 |                 | single metric (`pass_completion`) |       coordinated (all four) |
 | --------------- | --------------------------------: | ---------------------------: |
-| max\|z\|        |      320/2,140 (15.0%, auc 0.910) | 223/2,140 (10.4%, auc 0.905) |
-| mahalanobis     |       144/2,140 (6.7%, auc 0.920) | 260/2,140 (12.1%, auc 0.917) |
-| forest          |        26/2,140 (1.2%, auc 0.858) | 464/2,140 (21.7%, auc 0.862) |
-| mahalanobis_res |      323/2,140 (15.1%, auc 0.922) | 348/2,140 (16.3%, auc 0.922) |
-| forest_res      |         1/2,140 (0.0%, auc 0.887) | 455/2,140 (21.3%, auc 0.911) |
+| max\|z\|        |      325/2,140 (15.2%, auc 0.909) | 219/2,140 (10.2%, auc 0.905) |
+| mahalanobis     |       143/2,140 (6.7%, auc 0.918) | 251/2,140 (11.7%, auc 0.913) |
+| forest          |        23/2,140 (1.1%, auc 0.862) | 477/2,140 (22.3%, auc 0.868) |
+| mahalanobis_res |      241/2,140 (11.3%, auc 0.911) | 313/2,140 (14.6%, auc 0.906) |
+| forest_res      |         0/2,140 (0.0%, auc 0.885) | 479/2,140 (22.4%, auc 0.911) |
 
-The forests are weakest against a single metric and strongest against the coordinated one. On the coordinated injection the forest recovers **2.1× max|z|**. That is a statement about the bar, not about ranking: `mahalanobis_res` ranks perturbed rows above clean ones more reliably (auc 0.922 against `forest`'s 0.862), while `forest` moves fewer rows further past the cut.
+The forests are weakest against a single metric and strongest against the coordinated one. On the coordinated injection the forest recovers **2.2× max|z|**. That is a statement about the bar, not about ranking: `mahalanobis` ranks perturbed rows above clean ones more reliably (auc 0.913 against `forest_res`'s 0.911), while `forest_res` moves fewer rows further past the cut.
+
+**What the scorers see.** Six per-match metrics — `pass_completion_pct`, `defensive_action_success_pct`, `mean_action_x`, `passes_per_90`, `defensive_actions_per_90`, `touches_in_defensive_third_per_90` — or their leave-one-out per-player residuals: max|z| and the `_res` scorers read the residual z's, `mahalanobis` and `forest` the metric vector directly.
+
+**Where the injection lands.** Never on those metrics: each mechanism moves hidden action counts — events a manipulator actually controls — and every metric is re-derived from what survives. What the scorer sees move is downstream of that:
+
+| hidden variable moved                                                                                                                                                                                                                                                                                         | mechanism           | what the scorer sees move                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defensive_actions` — the total, interceptions included                                                                                                                                                                                                                                                       | `remove_defensive`  | `defensive_actions_per_90` ↓; the success rate is re-drawn over the survivors and barely shifts, because a hypergeometric removal takes successes in proportion |
+| `touches_in_defensive_third` **and** the x-position of the player's actions (`sum_start_x_in_defensive_third`) — **two variables that can only move together**: a touch relocated out of the defensive third is, by identity, both one fewer touch there and more of the player's action mass further upfield | `relocate_upfield`  | `touches_in_defensive_third_per_90` ↓ and `mean_action_x` ↑, jointly                                                                                            |
+| `defensive_actions_successful`                                                                                                                                                                                                                                                                                | `defensive_success` | `defensive_action_success_pct` ↓ (attempts frozen)                                                                                                              |
+| `passes_completed`                                                                                                                                                                                                                                                                                            | `pass_completion`   | `pass_completion_pct` ↓ (`passes` volume frozen)                                                                                                                |
+
+Five hidden variables over four channels. They are not five independent knobs: the counts overlap by set membership — `defensive_actions_successful` nests inside `defensive_actions`, and about a quarter of defensive-third touches ARE defensive actions — so `remove_defensive` moves part of what the other channels control. The coordinated condition splits k across the four in quadrature and applies them in a fixed order, re-sizing each against the state the previous one left, rather than pretending they are simultaneous and independent. `throttle_defensive` drives the same variable as `defensive_success`, as a fraction of successes lost rather than k·σ, so it is excluded from the composition.
+
+Calibration: every derived bar flags 1.00% of the clean census (largest deviation 0.0002%), so the recovery columns are read against a true base rate.
 
 <!-- fis-summary:end -->
 
 [Full sensitivity tables](results/phase2.md)
 
-Three limits. The population is observed, not certified-clean, so base rates
-are upper bounds on the false-positive rate. These measure sensitivity to
+Two limits. The population is observed, not certified-clean, so base rates
+are upper bounds on the false-positive rate. And these measure sensitivity to
 _simulated_ manipulation — nothing here is validated against a confirmed case.
-And the run is held-out: only the injected rows are scored, so what a
-manipulation does to the player's OTHER matches is not measured.
+
+Collateral is measured separately, under a design that leaves the fixed match in
+the player's history and rescores every other match of his: injecting one match
+barely moves the rest, and moves it downward, because a perturbed row widens the
+player's own scale estimate and a wider spread deflates every other row's z. See
+the collateral section of the report.
 
 ## Stage rule
 
@@ -123,15 +140,16 @@ Either way the package installs editable, which puts the console scripts on your
 `PATH`. The pixi tasks are shorthand for those scripts, and nothing depends on
 them:
 
-| pixi task           | equivalent                      |
-| ------------------- | ------------------------------- |
-| `pixi run fetch`    | `fis-fetch && fis-gen-dbt-docs` |
-| `pixi run ingest`   | `fis-ingest`                    |
-| `pixi run build`    | `dbt build`                     |
-| `pixi run test`     | `pytest -m 'not slow'`          |
-| `pixi run test-all` | `pytest`                        |
-| `pixi run lint`     | `ruff check src`                |
-| `pixi run hooks`    | `pre-commit run --all-files`    |
+| pixi task           | equivalent                                       |
+| ------------------- | ------------------------------------------------ |
+| `pixi run fetch`    | `fis-fetch && fis-gen-dbt-docs`                  |
+| `pixi run ingest`   | `fis-ingest`                                     |
+| `pixi run build`    | `dbt build`                                      |
+| `pixi run test`     | `pytest -m 'not slow'`                           |
+| `pixi run test-all` | `pytest`                                         |
+| `pixi run lint`     | `ruff check src`                                 |
+| `pixi run publish`  | re-render `results/` from the last canonical run |
+| `pixi run hooks`    | `pre-commit run --all-files`                     |
 
 `pixi run build` chains fetch and ingest first; run them in that order by hand.
 
@@ -239,7 +257,8 @@ per-match files, and expands past 1 GB.
 **`referees.json` is published truncated.** It ends mid-record, so duckdb cannot
 read it at all. The fetcher detects this specific damage, recovers all 627
 records — salvaging the final partial one, which keeps every field except its
-last — and preserves the original as `referees.as-published.json`. The repair is
+last — and preserves the original as `referees.json.as-published` — suffix last, so
+no dbt source glob can union the damaged copy back in. The repair is
 lazy: a file that parses is left exactly as downloaded, so an upstream fix makes
 it a no-op.
 
