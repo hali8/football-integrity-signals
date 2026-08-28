@@ -60,10 +60,13 @@ MIN_MATRIX_PLAYERS = 10
 
 
 #: Stamped into the rendered markdown so staleness is detectable without the
-#: warehouse: the ANALYSIS hash covers the code that produced the results, the
-#: RENDER hash only this module. They fail differently -- see freshness().
+#: warehouse: ANALYSIS covers the code behind the results, RENDER this module,
+#: RUNTIME the installed numerical environment, RESULTS the payload parquet.
+#: They fail differently -- see freshness().
 ANALYSIS_STAMP = "fis-analysis"
 RENDER_STAMP = "fis-render"
+RUNTIME_STAMP = "fis-runtime"
+RESULTS_STAMP = "fis-results"
 #: Column and scorer renames, applied ONLY under --stale-ok so an artefact from
 #: before a rename can still be rendered. Never on the normal path, where the
 #: stamp refuses stale input outright.
@@ -72,31 +75,60 @@ LEGACY_RENAMES = {"mahalanobis_z": "mahalanobis_res"}
 
 #: The one string both the banner and the pre-push hook test for.
 STALE_MARKER = "These numbers are stale"
+#: Delimits the block the render OWNS in the README. Prose outside it is the
+#: author's; numbers inside it come from the run, so they cannot go stale by
+#: being hand-copied -- which is how a wrong figure got published once.
+SUMMARY_OPEN = "<!-- fis-summary:start -->"
+SUMMARY_CLOSE = "<!-- fis-summary:end -->"
+# Worded to the antecedent: a source hash knows the code changed, not that a
+# number moved.
 STALE_BANNER = (
-    f"> **⚠ {STALE_MARKER}.** They do not describe the current detector. "
+    f"> **⚠ {STALE_MARKER}.** The analysis code has changed since they were "
+    "produced, so they may no longer describe the current detector. "
     "Regenerate with `fis-report --forest --jobs -1`.\n"
 )
 
 
-def _stamps(stale: bool = False) -> dict[str, str]:
-    """Current hashes for the two things a report depends on.
+def _runtime() -> str:
+    """Installed versions of the numerical path -- what moves a result with no
+    source change. Versions, not constraints; environments, not machines."""
+    from importlib import metadata
+
+    parts = [f"python={sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}"]
+    for name in ("numpy", "pandas", "scipy", "scikit-learn", "joblib", "pyarrow", "matplotlib"):
+        try:
+            parts.append(f"{name}={metadata.version(name)}")
+        except metadata.PackageNotFoundError:
+            parts.append(f"{name}=absent")
+    return ",".join(parts)
+
+
+def _stamps(stale: bool = False, results_stamp: str | None = None) -> dict[str, str]:
+    """Current hashes for everything a rendered report depends on.
 
     ``stale`` poisons the analysis stamp so a report rendered from rejected
-    results cannot pass --check afterwards.
+    results cannot pass --check. ``results_stamp`` pins the payload consumed.
     """
-    return {
+    stamps = {
         ANALYSIS_STAMP: "stale" if stale else heldout._code_fingerprint((injection_test,)),
         RENDER_STAMP: heldout._code_fingerprint((sys.modules[__name__],)),
+        RUNTIME_STAMP: _runtime(),
     }
+    if results_stamp is not None:
+        stamps[RESULTS_STAMP] = "stale" if stale else results_stamp
+    return stamps
 
 
-def freshness(text: str) -> tuple[str, str]:
-    """Classify a rendered report against the code as it stands now.
+def freshness(text: str, results: Path | None = None) -> tuple[str, str]:
+    """Classify a rendered report against the code and payload as they stand.
 
-    Returns (state, detail) where state is fresh | render | analysis | unknown.
-    Split because the two cost wildly different amounts to fix: a render is
-    seconds against the saved results, an analysis change invalidates those
-    results and needs the whole campaign again.
+    Returns (state, detail): fresh | render | analysis | runtime | payload |
+    unknown. Split because they cost different amounts to fix: a render is
+    seconds, analysis and runtime invalidate the results, and payload means
+    the backing results are gone or are not the stamped ones.
+
+    ``results`` is checked only where its directory exists -- a checkout without
+    the warehouse cannot tell "deleted" from "never fetched".
     """
     now = _stamps()
     found = {
@@ -111,12 +143,75 @@ def freshness(text: str) -> tuple[str, str]:
         return "unknown", "no stamp: rendered before freshness tracking existed"
     if found.get(ANALYSIS_STAMP) != now[ANALYSIS_STAMP]:
         return "analysis", (
-            "the estimator or injection code changed, so the saved results no "
-            "longer describe it -- a full campaign re-run is needed"
+            "the estimator or injection code has changed since these results "
+            "were saved, so they may no longer describe it -- a full campaign "
+            "re-run is needed"
         )
+    if RUNTIME_STAMP in found and found[RUNTIME_STAMP] != now[RUNTIME_STAMP]:
+        was = dict(p.split("=", 1) for p in found[RUNTIME_STAMP].split(",") if "=" in p)
+        is_ = dict(p.split("=", 1) for p in now[RUNTIME_STAMP].split(",") if "=" in p)
+        drift = [
+            f"{k} {was.get(k, '?')}→{is_.get(k, '?')}" for k in is_ if was.get(k) != is_.get(k)
+        ]
+        return "runtime", (
+            f"the numerical environment changed ({', '.join(drift)}) -- the same "
+            "source can now produce different numbers, so re-run or restore the pinned environment"
+        )
+    stamped_payload = found.get(RESULTS_STAMP)
+    if stamped_payload and results is not None and results.parent.exists():
+        if not results.exists():
+            return "payload", (
+                f"the stamped results payload is missing at {results} -- the report "
+                "presents numbers whose backing no longer exists; re-run the campaign"
+            )
+        import pyarrow.parquet as pq
+
+        held = (pq.read_schema(results).metadata or {}).get(b"fis_fingerprint", b"").decode()
+        if held != stamped_payload:
+            return "payload", (
+                f"the results at {results} are not the ones this report was rendered "
+                "from -- re-render from the right payload or re-run"
+            )
     if found.get(RENDER_STAMP) != now[RENDER_STAMP]:
         return "render", "only the renderer changed -- re-render from the saved results"
     return "fresh", "matches the code as it stands"
+
+
+def _clear_banner(text: str) -> str:
+    """Drop the stale warning, however it was worded.
+
+    Matching the generated string exactly meant a hand-edited banner never
+    cleared, so the warning outlived the re-run that answered it.
+    """
+    lines = text.splitlines(keepends=True)
+    kept = [ln for ln in lines if STALE_MARKER not in ln]
+    if len(kept) == len(lines):
+        return text
+    out = "".join(kept)
+    while "\n\n\n" in out:
+        out = out.replace("\n\n\n", "\n\n")
+    return out
+
+
+def _put_summary(text: str, scored: pd.DataFrame, rendered: str) -> str:
+    """Rewrite the README block the render owns, if the markers are there.
+
+    The numbers are LIFTED from the rendered report rather than recomputed, so
+    the README cannot disagree with the tables it links to.
+    """
+    if SUMMARY_OPEN not in text or SUMMARY_CLOSE not in text:
+        return text
+    body = rendered.partition("## Headline\n")[2].split("\n<details>", 1)[0].strip()
+    block = (
+        f"{SUMMARY_OPEN}\n\n"
+        f"One full-population run: {len(scored):,} player-matches, "
+        f"{scored['player_id'].nunique():,} players.\n\n"
+        f"{body}\n\n"
+        f"{SUMMARY_CLOSE}"
+    )
+    head, _, rest = text.partition(SUMMARY_OPEN)
+    _, _, tail = rest.partition(SUMMARY_CLOSE)
+    return head + block + tail
 
 
 def _fold(title: str, body: str) -> str:
@@ -135,9 +230,100 @@ def _context(scored: pd.DataFrame, rates: tuple[float, ...], headline) -> str:
         f"`fis-report`, {datetime.now(UTC).date().isoformat()}. "
         f"{len(scored):,} player-matches / {scored['player_id'].nunique():,} players; "
         f"severity ladder k = {injection_test.SEVERITIES}; bars at {bars}; "
-        f"agreement matrices on `{mechanism}:{severity:g}`. "
-        "Every number is derived at render time, never hardcoded."
+        f"agreement matrices on `{mechanism}:{severity:g}`."
     )
+
+
+def experiment_note() -> str:
+    """What the scorers see, and where the injection actually lands.
+
+    Different spaces on purpose: scorers read the metrics, mechanisms move the
+    counts underneath, so a metric shift is a consequence and never an edit.
+    """
+    rates = ", ".join(f"`{m}`" for m in baseline.RATE_METRICS)
+    volumes = ", ".join(f"`{m}_per_90`" for m in baseline.VOLUME_METRICS)
+    return "\n".join(
+        [
+            (
+                f"**What the scorers see.** Six per-match metrics — {rates}, "
+                f"{volumes} — or their leave-one-out per-player residuals: "
+                "max|z| and the `_res` scorers read the residual z's, "
+                "`mahalanobis` and `forest` the metric vector directly."
+            ),
+            "",
+            (
+                "**Where the injection lands.** Never on those metrics: each "
+                "mechanism moves hidden action counts — events a manipulator "
+                "actually controls — and every metric is re-derived from what "
+                "survives. What the scorer sees move is downstream of that:"
+            ),
+            "",
+            "| hidden variable moved | mechanism | what the scorer sees move |",
+            "|---|---|---|",
+            (
+                "| `defensive_actions` — the total, interceptions included | "
+                "`remove_defensive` | `defensive_actions_per_90` ↓; the success "
+                "rate is re-drawn over the survivors and barely shifts, because a "
+                "hypergeometric removal takes successes in proportion |"
+            ),
+            (
+                "| `touches_in_defensive_third` **and** the x-position of the "
+                "player's actions (`sum_start_x_in_defensive_third`) — **two "
+                "variables that can only move together**: a touch relocated out of "
+                "the defensive third is, by identity, both one fewer touch there "
+                "and more of the player's action mass further upfield | "
+                "`relocate_upfield` | `touches_in_defensive_third_per_90` ↓ and "
+                "`mean_action_x` ↑, jointly |"
+            ),
+            (
+                "| `defensive_actions_successful` | `defensive_success` | "
+                "`defensive_action_success_pct` ↓ (attempts frozen) |"
+            ),
+            (
+                "| `passes_completed` | `pass_completion` | `pass_completion_pct` ↓ "
+                "(`passes` volume frozen) |"
+            ),
+            "",
+            (
+                "Five hidden variables over four channels. They are not five "
+                "independent knobs: the counts overlap by set membership — "
+                "`defensive_actions_successful` nests inside `defensive_actions`, "
+                "and about a quarter of defensive-third touches ARE defensive "
+                "actions — so `remove_defensive` moves part of what the other "
+                "channels control. The coordinated condition splits k across the "
+                "four in quadrature and applies them in a fixed order, re-sizing "
+                "each against the state the previous one left, rather than "
+                "pretending they are simultaneous and independent. "
+                "`throttle_defensive` drives the same variable as "
+                "`defensive_success`, as a fraction of successes lost rather than "
+                "k·σ, so it is excluded from the composition."
+            ),
+        ]
+    )
+
+
+def calibration_note(scored: pd.DataFrame, census: pd.DataFrame, bars: dict, rate: float) -> str:
+    """The bug check: every derived bar must flag ``rate`` of the clean census.
+
+    One sentence when they all do, the per-scorer list when one deviates.
+    """
+    flagged = baseline.flag(scored, rate)
+    shares = {"max": float(flagged["is_flagged"].mean())}
+    for name in injection_test.SCORERS + injection_test.FOREST_SCORERS:
+        if name == "max" or name not in census:
+            continue
+        column = census[name].dropna()
+        if len(column) and np.isfinite(bars.get(name, np.nan)):
+            shares[name] = float((column >= bars[name]).mean())
+    worst = max(abs(v - rate) for v in shares.values())
+    if worst < 5e-4:
+        return (
+            f"Calibration: every derived bar flags {rate:.2%} of the clean census "
+            f"(largest deviation {worst:.4%}), so the recovery columns are read "
+            "against a true base rate."
+        )
+    listed = "  ".join(f"{k} {v:.4%}" for k, v in shares.items())
+    return f"Calibration (target {rate:.2%}): {listed}"
 
 
 def headline_summary(stats: pd.DataFrame, low: float, headline) -> str:
@@ -176,11 +362,15 @@ def headline_summary(stats: pd.DataFrame, low: float, headline) -> str:
         label = "max\\|z\\|" if tally == "max" else tally
         table.append(f"| {label} | {cell(a)} | {cell(b)} |")
 
+    # Only claimed when the forests are in the table.
+    forest, univariate = pick("forest", mechanism), pick("max", mechanism)
+    said_forest = forest is not None and pick("forest", single) is not None
     tail = (
         "The forests are weakest against a single metric and strongest against the coordinated one."
+        if said_forest
+        else ""
     )
-    forest, univariate = pick("forest", mechanism), pick("max", mechanism)
-    if forest is not None and univariate is not None and univariate.recovery:
+    if said_forest and univariate is not None and univariate.recovery:
         tail += (
             f" On the coordinated injection the forest recovers "
             f"**{forest.recovery / univariate.recovery:.1f}× max|z|**."
@@ -193,8 +383,13 @@ def headline_summary(stats: pd.DataFrame, low: float, headline) -> str:
         by_bar = max(scored, key=lambda pair: pair[1].recovery)
         by_rank = max(scored, key=lambda pair: pair[1].auc)
         if by_bar[0] != by_rank[0]:
+            lead = (
+                " That is a statement about the bar, not about ranking: "
+                if tail
+                else "Recovery counts crossings of one cut; AUC ranks the whole distribution: "
+            )
             tail += (
-                f" That is a statement about the bar, not about ranking: `{by_rank[0]}` "
+                f"{lead}`{by_rank[0]}` "
                 f"ranks perturbed rows above clean ones more reliably (auc "
                 f"{by_rank[1].auc:.3f} against `{by_bar[0]}`'s {by_bar[1].auc:.3f}), while "
                 f"`{by_bar[0]}` moves fewer rows further past the cut."
@@ -406,10 +601,10 @@ def detection_table(
             "the others have to beat.\n"
         ),
         (
-            f"| scorer | injection | k | delivered | n | dosed | auc | clipped "
+            f"| scorer | injection | k | delivered | delivered z | n | dosed | auc | clipped "
             f"| recovery @{low:.0%} | recovery @{high:.0%} | collateral |"
         ),
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for tally in tallies:
         rows = base[base.tally == tally]
@@ -442,9 +637,13 @@ def detection_table(
             high_cell = rate(hi) if hi is not None else "n/a"
             dosed_n = f"{int(row.n_dosed):,}" if row.n_dosed else "n/a"
             delivered = f"{row.achieved:+.2f} sd" if np.isfinite(row.achieved) else "per-DOF"
+            # Scorers pick different target rows; delivered z is what says
+            # those rows took comparable doses.
+            moved_z = getattr(row, "delivered_z", np.nan)
+            delivered_z = f"{moved_z:+.2f}" if np.isfinite(moved_z) else "n/a"
             lines.append(
                 f"| {f'**{tally}**' if not first else ''} | {row.mechanism} "
-                f"| {row.severity:.3g} | {delivered} | {row.n:,} | {dosed_n} "
+                f"| {row.severity:.3g} | {delivered} | {delivered_z} | {row.n:,} | {dosed_n} "
                 f"| {f'{row.auc:.3f}' if np.isfinite(row.auc) else 'n/a'} "
                 f"| {_pct(row.clipped, 4)} "
                 f"| {rate(row)} "
@@ -507,7 +706,7 @@ def target_agreement(
         return f"\n### {title} (n={len(players):,})\n\n{_matrix(present, cell)}{note}"
 
     out = [
-        "\nBar- and dose-free. A gap in coverage is reported under the grid.",
+        "\nIndependent of bar and dose. A gap in coverage is reported under the grid.",
     ]
     if plots_dir is None:
         out.append(block(everyone, "all positions"))
@@ -668,6 +867,7 @@ def build(
     rates: tuple[float, ...] = RATES,
     plots_dir: Path | None = None,
     stale: bool = False,
+    results_stamp: str | None = None,
 ) -> str:
     """Every table, from one results frame."""
     bars = {r: heldout.production_bars(scored, census, r) for r in rates}
@@ -683,13 +883,14 @@ def build(
     )
     mechanism, severity = headline
     parts = [
-        *(f"<!-- {k}={v} -->" for k, v in _stamps(stale).items()),
-        "# Phase 2 — injection sensitivity\n",
+        *(f"<!-- {k}={v} -->" for k, v in _stamps(stale, results_stamp).items()),
+        "# Injection sensitivity\n",
         _context(scored, rates, headline),
         headline_summary(per_rate[min(rates)], min(rates), headline),
-        "\n```",
-        injection_test.census_rates(scored, census, bars[min(rates)], min(rates)),
-        "```",
+        "",
+        experiment_note(),
+        "",
+        calibration_note(scored, census, bars[min(rates)], min(rates)),
         _fold(
             "DIRECT metric space",
             detection_section(per_rate, DIRECT, "DIRECT metric space", mechanism, plots_dir),
@@ -771,9 +972,19 @@ def caption(scored: pd.DataFrame, census: pd.DataFrame, rates: tuple[float, ...]
                 "perturbed — so there is no sample and no interval to put on them."
             ),
             (
-                "- **AUC is threshold-free**, so it is reported once rather than per rate. It is "
-                "paired — each injected row against its own clean score — so the no-skill line is "
-                "**exactly 0.5**, and the k=0 row measures that rather than setting it."
+                "- **The experiment is a scorer-relative typical-match challenge.** Each scorer's "
+                "target is the match nearest that player's own median under that scorer — the same "
+                "selection rule for every scorer, realised on different rows. The question each row "
+                "answers is: injected into the kind of match this scorer finds unremarkable for "
+                "this player, is the signal detected? The `delivered`/`delivered z` columns are the "
+                "cross-scorer check that the different rows received comparable doses."
+            ),
+            (
+                "- **AUC is a cohort-referenced two-sample (Mann–Whitney) comparison** of the "
+                "target cohort's clean and after distributions, ties counted half — not per-row "
+                "pairs. It is threshold-free *at each specified dose*, so it is reported once "
+                "rather than per rate. At k=0 the two multisets are identical, so the no-skill "
+                "line is **exactly 0.5**, and the k=0 row measures that rather than setting it."
             ),
             (
                 "- **Do not compare mechanism rows as if they were equally injected.** `delivered` "
@@ -807,6 +1018,12 @@ def caption(scored: pd.DataFrame, census: pd.DataFrame, rates: tuple[float, ...]
     )
 
 
+def is_canonical(n: int | None, forest: bool, design: str, seed: int) -> bool:
+    """Whether a run is the published study's recipe. Anything narrower is a
+    diagnostic and must not overwrite publication-facing output."""
+    return n is None and forest and design == "heldout" and seed == injection_test.SEED
+
+
 def _mark_stale(target: Path, state: str) -> int:
     """Band the report and the README so a deferred re-run is visible upstream.
 
@@ -819,9 +1036,9 @@ def _mark_stale(target: Path, state: str) -> int:
         return 0
     text = target.read_text(encoding="utf-8")
     if STALE_MARKER not in text:
-        head, _, rest = text.partition("# Phase 2 — injection sensitivity\n")
+        head, _, rest = text.partition("# Injection sensitivity\n")
         target.write_text(
-            head + "# Phase 2 — injection sensitivity\n\n" + STALE_BANNER + rest, encoding="utf-8"
+            head + "# Injection sensitivity\n\n" + STALE_BANNER + rest, encoding="utf-8"
         )
         print(f"banded {target}")
     readme = Path("README.md")
@@ -900,6 +1117,16 @@ def main(argv: list[str] | None = None) -> int:
         "warning, for when a re-run is deferred rather than done.",
     )
     parser.add_argument(
+        "--design",
+        choices=("persistent", "heldout"),
+        default="heldout",
+        help="heldout scores only each scorer's targets against criteria fixed "
+        "on the clean census -- no collateral, cheap enough for forests. "
+        "persistent leaves the fixed match in the player's history and measures "
+        "what it does to his other matches, at a fit per row per frame. Target "
+        "scores are identical either way.",
+    )
+    parser.add_argument(
         "--out",
         type=str,
         default=None,
@@ -917,11 +1144,15 @@ def main(argv: list[str] | None = None) -> int:
         if not target.exists():
             print(f"no report at {target}; nothing to check")
             return 0
-        state, detail = freshness(target.read_text(encoding="utf-8"))
+        # The payload sits beside the working render; results/ is markdown only.
+        payload = Path(args.results) if args.results else published.with_suffix(".parquet")
+        state, detail = freshness(target.read_text(encoding="utf-8"), results=payload)
         if args.mark_stale:
             return _mark_stale(target, state)
         print(f"{target}: {state} -- {detail}")
-        return {"fresh": 0, "render": 1, "analysis": 2, "unknown": 2}[state]
+        return {"fresh": 0, "render": 1, "analysis": 2, "runtime": 2, "payload": 2, "unknown": 2}[
+            state
+        ]
 
     name, _, dose = args.headline.partition(":")
     mart = baseline.load()
@@ -934,8 +1165,17 @@ def main(argv: list[str] | None = None) -> int:
 
     cache = Path(args.census) if args.census else None
     settings = heldout.scoring_config(forest=args.forest)
-    # The results also turn on --seed, which the census does not.
-    run_settings = heldout.results_config(settings, args.seed)
+    # ONE resolved recipe for runner and stamp: resolving twice lets a run
+    # under one recipe be stamped as another.
+    recipe = injection_test.canonical_recipe(
+        forest=args.forest,
+        design=args.design,
+        seed=args.seed,
+        compositions={"correlated": tuple(injection_test.COMPOSITION_ORDER)},
+    )
+    run_settings = injection_test.campaign_config(settings, recipe, mart)
+    # Only the canonical recipe may touch the README; the rest self-label.
+    canonical = is_canonical(args.n, args.forest, args.design, args.seed)
     if cache is not None and cache.exists():
         if args.stale_ok:
             census = pd.read_parquet(cache).rename(columns=LEGACY_RENAMES)
@@ -973,11 +1213,16 @@ def main(argv: list[str] | None = None) -> int:
             scored,
             mart,
             census,
-            forest=args.forest,
-            design="heldout",
-            compositions={"correlated": tuple(injection_test.COMPOSITION_ORDER)},
-            seed=args.seed,
+            forest=recipe["forest"],
+            design=recipe["design"],
+            severities=recipe["severities"],
+            mechanisms=recipe["mechanisms"],
+            compositions=recipe["compositions"],
+            metrics=recipe["metrics"],
+            scorers=recipe["scorers"],
+            seed=recipe["seed"],
             jobs=args.jobs,
+            progress=True,
         )
         saved.parent.mkdir(parents=True, exist_ok=True)
         heldout.write_stamped(saved, results, scored, extra=(injection_test,), config=run_settings)
@@ -989,21 +1234,31 @@ def main(argv: list[str] | None = None) -> int:
         (name, float(dose)),
         plots_dir=path.parent / "plots",
         stale=args.stale_ok,
+        results_stamp=heldout.fingerprint(scored, extra=(injection_test,), config=run_settings),
     )
-    if args.stale_ok:
-        head, _, rest = rendered.partition("# Phase 2 — injection sensitivity\n")
-        rendered = head + "# Phase 2 — injection sensitivity\n\n" + STALE_BANNER + rest
-    path.write_text(rendered, encoding="utf-8")
-    # A fresh render answers the banner, so it must also remove it -- a stale
-    # warning left on current numbers is its own kind of wrong.
-    readme = Path("README.md")
-    fresh_enough = not args.stale_ok
-    if fresh_enough and readme.exists() and STALE_BANNER in readme.read_text(encoding="utf-8"):
-        readme.write_text(
-            readme.read_text(encoding="utf-8").replace("\n\n" + STALE_BANNER, "", 1),
-            encoding="utf-8",
+    banner = STALE_BANNER if args.stale_ok else None
+    if not canonical:
+        banner = (
+            "> **Diagnostic run — not the published result.** Rendered from a "
+            f"non-canonical recipe (`--n {args.n}`, forest={args.forest}, "
+            f"design={args.design}, seed={args.seed}); publication-facing output "
+            "is untouched.\n"
         )
-        print("cleared the stale banner from README.md")
+    if banner:
+        head, _, rest = rendered.partition("# Injection sensitivity\n")
+        rendered = head + "# Injection sensitivity\n\n" + banner + rest
+    path.write_text(rendered, encoding="utf-8")
+    # A fresh render answers the banner, so it clears it. Gated: only the
+    # canonical recipe rewrites the block a reader will cite.
+    readme = Path("README.md")
+    if canonical and not args.stale_ok and readme.exists():
+        before = readme.read_text(encoding="utf-8")
+        after = _put_summary(_clear_banner(before), scored, rendered)
+        if after != before:
+            readme.write_text(after, encoding="utf-8")
+            print("updated README.md: summary regenerated, stale banner cleared")
+    elif not canonical:
+        print("non-canonical recipe: output labelled diagnostic, README untouched")
     print(f"wrote {path}\nresults at {saved}  (re-render from this; no rerun needed)")
     return 0
 

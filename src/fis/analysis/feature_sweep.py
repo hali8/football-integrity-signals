@@ -98,12 +98,7 @@ def sweep(
             f"\n=== {name}  ({len(metrics)} metrics, {players:,} players, "
             f"{time.time() - started:.0f}s) ===\n"
             + injection_test.census_rates(scored, census, bars, rate)
-            + injection_test.summary_persistent(
-                results,
-                bars,
-                rate=rate,
-                reference=injection_test.reference_scores(scored, census),
-            )
+            + injection_test.summary_persistent(results, bars, rate=rate)
         )
     return "\n".join(blocks)
 

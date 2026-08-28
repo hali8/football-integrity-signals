@@ -1,30 +1,37 @@
 # football-integrity-signals
 
-Package to get familiar with match and player data.
+An exploration of how well single- and multivariate scorers can flag one match as statistically unusual for the individual involved, and of the limits of what event data at match grain can support.
 
 Fetches a public Wyscout event dataset, normalises it into one parquet file per
 match, and gives a duckdb/dbt warehouse to build match-integrity signals on top of.
 
 ## Output / analysis summary
 
+> **⚠ These numbers are stale.** The analysis code has changed since they were produced, so they may no longer describe the current detector. Regenerate with `fis-report --forest --jobs -1`.
+
 A limited pathfinder — at what level an injected signal can be found in
 aggregate data, with no attempt to account for all correlated factors.
 
-One full-population run, 2026-08-27: 43,993 player-matches, 2,140 players, seven
-scorers against five single mechanisms plus a coordinated four-channel injection.
 One typical match per player: the dose is k times that player's own spread, so
 injecting at the centre is what makes k mean k.
 
-**The best scorer depends on the manipulation.** Against a single metric, max|z|
-— the simplest scorer, and the baseline the others have to beat — is
-competitive and the isolation forests are last. Against a coordinated
-manipulation across four variables the order reverses: the forests recover
-**2.1× max|z|** (21.7% against 10.4% of injected targets, 1% bar, k=3). The case
-a real fixer most resembles is the one max|z| handles worst.
+<!-- fis-summary:start -->
 
-Which scorer leads depends on the bar as well as the manipulation. At 5% the
-order reverses again — `mahalanobis_res` recovers 44.8% against the forest's
-43.7% on the same injection — so neither dominates.
+One full-population run: 43,993 player-matches, 2,140 players.
+
+**The best scorer depends on the manipulation** — recovery at the 1% bar, k=3:
+
+|                 | single metric (`pass_completion`) |       coordinated (all four) |
+| --------------- | --------------------------------: | ---------------------------: |
+| max\|z\|        |      320/2,140 (15.0%, auc 0.910) | 223/2,140 (10.4%, auc 0.905) |
+| mahalanobis     |       144/2,140 (6.7%, auc 0.920) | 260/2,140 (12.1%, auc 0.917) |
+| forest          |        26/2,140 (1.2%, auc 0.858) | 464/2,140 (21.7%, auc 0.862) |
+| mahalanobis_res |      323/2,140 (15.1%, auc 0.922) | 348/2,140 (16.3%, auc 0.922) |
+| forest_res      |         1/2,140 (0.0%, auc 0.887) | 455/2,140 (21.3%, auc 0.911) |
+
+The forests are weakest against a single metric and strongest against the coordinated one. On the coordinated injection the forest recovers **2.1× max|z|**. That is a statement about the bar, not about ranking: `mahalanobis_res` ranks perturbed rows above clean ones more reliably (auc 0.922 against `forest`'s 0.862), while `forest` moves fewer rows further past the cut.
+
+<!-- fis-summary:end -->
 
 [Full sensitivity tables](results/phase2.md)
 
@@ -726,7 +733,7 @@ utils/                        thin shell wrapper around fis-fetch
 ## Status
 
 One vertical slice, end to end. Fetch, ingest, the dbt wiring and the stage-rule
-enforcement work and are tested; 14 staging models, 2 intermediate and
+enforcement work and are tested; every staging and intermediate model and
 `fct_player_match_metrics` build from a single `dbt build`.
 
 The slice is deliberately thin — enough metrics to prove the spine, not the full

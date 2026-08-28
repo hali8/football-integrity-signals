@@ -465,3 +465,6 @@ caught: max 38, mahalanobis 19, forest 45, forest_norm 37, mahalanobis_res 49, f
 - Bars are derived from this population at run time, never hardcoded.
 
 </details>
+# Injection sensitivity
+
+> **⚠ These numbers are stale.** The analysis code has changed since they were produced, so they may no longer describe the current detector. Regenerate with `fis-report --forest --jobs -1`.

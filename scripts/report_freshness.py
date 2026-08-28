@@ -44,10 +44,12 @@ def main() -> int:
     if not REPORT.exists():
         return 0
     _reexec_in_project_env()
+    from fis import paths
     from fis.analysis.report import STALE_MARKER, freshness
 
     text = REPORT.read_text(encoding="utf-8")
-    state, detail = freshness(text)
+    # Only where the warehouse exists: CI cannot tell deleted from never-fetched.
+    state, detail = freshness(text, results=paths.report_dir() / "phase2.parquet")
     if state == "fresh":
         return 0
 
@@ -60,7 +62,18 @@ def main() -> int:
     if state == "render":
         print(f"{REPORT}: {detail}\n  re-rendering...")
         done = subprocess.run(
-            [sys.executable, "-m", "fis.analysis.report", "--out", str(REPORT)],
+            # Canonical recipe and cached census, or the stamp refuses the
+            # saved results and the hook refits.
+            [
+                sys.executable,
+                "-m",
+                "fis.analysis.report",
+                "--forest",
+                "--census",
+                str(paths.report_dir() / "census.parquet"),
+                "--out",
+                str(REPORT),
+            ],
             env={**__import__("os").environ, "PYTHONPATH": "src"},
             check=False,  # the returncode is inspected below, both ways
         )
