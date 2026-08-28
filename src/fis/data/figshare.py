@@ -242,10 +242,81 @@ def _read_stamp(dest: Path) -> dict | None:
 
 
 def _expected_stamp() -> dict:
+    # Download provenance only: matches.zip is deleted after extraction and
+    # repaired files are rewritten, so these md5s describe no file on disk.
     return {
         "collection": COLLECTION_URL,
         "files": {a.name: {"file_id": a.file_id, "md5": a.md5} for a in ASSETS},
     }
+
+
+def _digest(path: Path) -> dict:
+    sha = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(CHUNK), b""):
+            sha.update(chunk)
+    return {"bytes": path.stat().st_size, "sha256": sha.hexdigest()}
+
+
+def _payload_files(root: Path) -> set[str]:
+    if not root.is_dir():
+        return set()
+    return {p.name for p in root.iterdir() if p.is_file() and not p.name.startswith(".")}
+
+
+def _manifest(root: Path) -> dict[str, dict]:
+    """Size and hash of every visible file, exactly as it will be consumed."""
+    return {name: _digest(root / name) for name in sorted(_payload_files(root))}
+
+
+def verify(dest: Path | None = None) -> list[str]:
+    """Problems with the materialised payload; empty means intact.
+
+    Exact-set, because dbt discovers these files by glob: an unmanifested extra
+    fails like a missing or altered one.
+    """
+    dest = Path(dest) if dest is not None else json_dir()
+    stamp = _read_stamp(dest)
+    if stamp is None:
+        return [f"no stamp at {dest / STAMP_NAME}"]
+    expected = _expected_stamp()
+    problems = [
+        f"stamp: {key} no longer matches the pin"
+        for key in expected
+        if stamp.get(key) != expected[key]
+    ]
+    manifest = stamp.get("manifest")
+    if not isinstance(manifest, dict):
+        return problems + ["stamp has no payload manifest (pre-manifest fetch); refetch"]
+    found = _payload_files(dest)
+    problems += [f"missing: {name}" for name in sorted(set(manifest) - found)]
+    problems += [f"not in the manifest: {name}" for name in sorted(found - set(manifest))]
+    for name in sorted(set(manifest) & found):
+        if _digest(dest / name) != manifest[name]:
+            problems.append(f"altered: {name}")
+    return problems
+
+
+def _repair_payload(payload: Path, *, quiet: bool = True) -> dict[str, str]:
+    """Repair malformed published files in place; returns {name: what was done}.
+
+    Lazy, so an upstream fix makes it a no-op. Published bytes are kept beside
+    the repair, suffixed LAST so the sibling matches no dbt source glob.
+    """
+    repaired: dict[str, str] = {}
+    for path in sorted(payload.glob("*.json")):
+        outcome = repair_truncated_array(path.read_text(encoding="utf8"))
+        if outcome is None:
+            continue
+        records, salvaged_partial = outcome
+        path.rename(payload / f"{path.name}.as-published")
+        path.write_text(json.dumps(records))
+        repaired[path.name] = f"truncated upstream; recovered {len(records)} records" + (
+            ", last one salvaged without its final field" if salvaged_partial else ""
+        )
+        if not quiet:
+            print(f"  REPAIRED {path.name}: {repaired[path.name]}")
+    return repaired
 
 
 def _download(asset: Asset, target: Path, *, quiet: bool) -> None:
@@ -282,13 +353,12 @@ def fetch(dest: Path | None = None, *, force: bool = False, quiet: bool = False)
     """
     dest = Path(dest) if dest is not None else json_dir()
 
-    stamp = _read_stamp(dest)
-    expected = _expected_stamp()
-    # Compare only the pinned fields; the stamp may also record repairs.
-    if not force and stamp and all(stamp.get(k) == v for k, v in expected.items()):
+    # Manifest, not stamp fields alone: a stamp outlives a deleted, altered or
+    # extra payload file, and dbt globs this directory.
+    if not force and not verify(dest):
         if not quiet:
-            print(f"Already have {len(ASSETS)} pinned reference files: {dest}")
-            for name, why in (stamp.get("repaired") or {}).items():
+            print(f"Already have {len(ASSETS)} pinned reference files, manifest intact: {dest}")
+            for name, why in ((_read_stamp(dest) or {}).get("repaired") or {}).items():
                 print(f"  note: {name} was {why}")
         return dest
 
@@ -318,32 +388,18 @@ def fetch(dest: Path | None = None, *, force: bool = False, quiet: bool = False)
             else:
                 blob.rename(payload / asset.name)
 
-        # Some published files are malformed. Checked lazily: a file that parses
-        # is left exactly as downloaded, so an upstream fix makes this a no-op.
-        repaired: dict[str, str] = {}
-        for path in sorted(payload.glob("*.json")):
-            outcome = repair_truncated_array(path.read_text(encoding="utf8"))
-            if outcome is None:
-                continue
-            records, salvaged_partial = outcome
-            # Keep the published bytes next to the repair so the damage stays
-            # auditable and the md5 in the stamp still refers to something real.
-            path.rename(payload / f"{path.stem}.as-published{path.suffix}")
-            path.write_text(json.dumps(records))
-            repaired[path.name] = f"truncated upstream; recovered {len(records)} records" + (
-                ", last one salvaged without its final field" if salvaged_partial else ""
-            )
-            if not quiet:
-                print(f"  REPAIRED {path.name}: {repaired[path.name]}")
-
-        stamp = _expected_stamp()
-        if repaired:
-            stamp["repaired"] = repaired
-        (payload / STAMP_NAME).write_text(json.dumps(stamp, indent=2))
+        repaired = _repair_payload(payload, quiet=quiet)
 
         if not quiet:
             print("Fetching field documentation from the article metadata")
         (payload / DOCS_NAME).write_text(json.dumps(fetch_documentation(quiet), indent=2))
+
+        # Stamped last, so the manifest hashes files as ingestion consumes them.
+        stamp = _expected_stamp()
+        if repaired:
+            stamp["repaired"] = repaired
+        stamp["manifest"] = _manifest(payload)
+        (payload / STAMP_NAME).write_text(json.dumps(stamp, indent=2))
 
         previous = dest.with_name(dest.name + ".previous") if dest.exists() else None
         if previous is not None:
@@ -362,7 +418,7 @@ def fetch(dest: Path | None = None, *, force: bool = False, quiet: bool = False)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="fis-fetch-reference", description=__doc__.splitlines()[0]
+        prog="python -m fis.data.figshare", description=__doc__.splitlines()[0]
     )
     parser.add_argument("--dest", type=Path, default=None, help="target (default: <data dir>/json)")
     parser.add_argument("--force", action="store_true", help="re-download even if present")

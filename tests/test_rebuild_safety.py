@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import textwrap
@@ -182,13 +183,12 @@ def test_a_leftover_beside_a_foreign_live_set_refuses_rather_than_guessing(tmp_p
     assert previous.exists() and live.exists(), "neither may be removed"
 
 
-# A rebuild mutates the filesystem a handful of times: clearing staging, then
-# the two renames and the cleanup. Killing at each covers every state a crash
-# can leave behind.
-_MUTATIONS = 6
+# Four mutations: clear staging, the two renames, remove previous. Asserted
+# from both sides below -- 6 here once made two cases pass without killing.
+_MUTATIONS = 4
 
 
-@pytest.mark.parametrize("kill_at", range(_MUTATIONS))
+@pytest.mark.parametrize("kill_at", range(_MUTATIONS + 1))
 def test_a_rebuild_interrupted_anywhere_recovers_to_one_complete_set(
     tmp_path, kill_at, monkeypatch
 ):
@@ -199,6 +199,10 @@ def test_a_rebuild_interrupted_anywhere_recovers_to_one_complete_set(
     of two parser versions, and never a leftover that blocks the retry. Sweeping
     the kill point tests the property directly instead of enumerating states one
     bug report at a time.
+
+    Each case asserts the child actually died where intended -- a kill that
+    never fired proves nothing -- and the extra case must complete UNKILLED,
+    pinning the count from above.
     """
     live = tmp_path / "parquet"
     _parquet(live, "old")
@@ -232,7 +236,17 @@ def test_a_rebuild_interrupted_anywhere_recovers_to_one_complete_set(
         wyscout.run(argparse.Namespace(fetch=False, out=None, limit=None, force=True))
     """)
     env = {**os.environ, "PYTHONPATH": str(pathlib.Path(wyscout.__file__).parents[3])}
-    subprocess.run([sys.executable, "-c", child], env=env, capture_output=True, check=False)
+    done = subprocess.run([sys.executable, "-c", child], env=env, capture_output=True, check=False)
+    if kill_at < _MUTATIONS:
+        assert done.returncode == -signal.SIGKILL, (
+            f"the child survived a kill scheduled at mutation {kill_at} "
+            f"(exit {done.returncode}) -- _MUTATIONS overstates the sweep.\n{done.stderr.decode()}"
+        )
+    else:
+        assert done.returncode == 0, (
+            f"a mutation past {_MUTATIONS} tripped the kill -- the sweep is "
+            f"narrower than the rebuild (exit {done.returncode}).\n{done.stderr.decode()}"
+        )
 
     # The retry: recovery and rebuild, exactly as an operator would run it.
     monkeypatch.setattr(wyscout, "parquet_dir", lambda: live)

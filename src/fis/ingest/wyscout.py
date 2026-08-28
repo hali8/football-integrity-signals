@@ -332,7 +332,7 @@ def _ingest(args: argparse.Namespace, target: Path) -> int:
     json_files = every_match
     if not json_files:
         print(
-            "error: no match files found -- run fis-fetch-wyscout first (or pass --fetch).",
+            "error: no match files found -- run fis-fetch first (or pass --fetch).",
             file=sys.stderr,
         )
         return 1
@@ -419,7 +419,7 @@ def _ingest(args: argparse.Namespace, target: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="fis-ingest-wyscout", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(prog="fis-ingest wyscout", description=__doc__.splitlines()[0])
     add_arguments(parser)
     return run(parser.parse_args(argv))
 

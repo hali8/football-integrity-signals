@@ -90,11 +90,14 @@ def fetch(
 
     Idempotent: a checkout stamped with the same commit is left alone. Extraction
     is staged and renamed into place, so an interrupted run leaves nothing partial.
+
+    Existence-only: files are not hashed and extras are not rejected. The
+    figshare payload carries the stronger manifest guarantee; this does not.
     """
     dest = Path(dest) if dest is not None else wyscout_dir()
 
     stamp = _read_stamp(dest)
-    if stamp and stamp.get("commit") == commit and not force:
+    if stamp and stamp.get("commit") == commit and not force and match_files(dest):
         if not quiet:
             print(f"Already at {commit[:12]}: {dest}")
         return dest
@@ -166,7 +169,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def is_fetched(dest: Path | None = None) -> bool:
-    return _read_stamp(Path(dest) if dest is not None else wyscout_dir()) is not None
+    # A stamp over a gutted checkout must not read as fetched.
+    root = Path(dest) if dest is not None else wyscout_dir()
+    return _read_stamp(root) is not None and bool(match_files(root))
 
 
 def run(args: argparse.Namespace) -> int:
