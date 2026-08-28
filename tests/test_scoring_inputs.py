@@ -199,7 +199,7 @@ def test_every_scoring_parameter_is_accounted_for():
         "scoring_config() and to `stamped`, or to `otherwise` with the reason."
     )
 
-    run_stamped = {"seed", "forest", "metrics"}
+    run_stamped = {"seed", "forest", "metrics", "design", "scorers"}
     run_otherwise = {
         "scored",
         "raw",
@@ -208,10 +208,65 @@ def test_every_scoring_parameter_is_accounted_for():
         "severities",
         "mechanisms",
         "compositions",
-        "design",
+        "progress",  # prints only; cannot reach a number
     }
     found = set(inspect.signature(injection_test.run).parameters)
     assert found == run_stamped | run_otherwise, (
         f"injection_test.run's parameters changed: {found ^ (run_stamped | run_otherwise)}. "
         "Add it to results_config() and to `run_stamped`, or to `run_otherwise`."
     )
+
+
+def test_the_stale_banner_clears_however_it_was_worded():
+    """Matching the generated string exactly meant a hand-edited banner never
+    cleared, so a warning outlived the re-run that answered it."""
+    from fis.analysis import report
+
+    edited = (
+        "## Output / analysis summary\n\n"
+        "> **⚠ These numbers are stale.** The gate has since been removed, so the\n"
+        "figures below do not describe the current detector.\n\n"
+        "Real prose that must survive.\n"
+    )
+    cleared = report._clear_banner(edited)
+    assert report.STALE_MARKER not in cleared
+    assert "Real prose that must survive." in cleared
+    assert "\n\n\n" not in cleared, "no gap left where the banner was"
+    # Idempotent, and a README without one is returned untouched.
+    assert report._clear_banner(cleared) == cleared
+
+
+def test_the_readme_summary_is_written_from_the_render():
+    """The numbers a reader sees in the README are LIFTED from the report, not
+    retyped -- hand-copying is how a wrong figure reached a published summary."""
+    from fis.analysis import report
+
+    readme = (
+        "Author's prose above.\n\n"
+        f"{report.SUMMARY_OPEN}\n\nstale hand-typed numbers\n\n{report.SUMMARY_CLOSE}\n\n"
+        "Author's prose below.\n"
+    )
+    rendered = (
+        "# Injection sensitivity\n\n## Headline\n\n"
+        "| | single | coordinated |\n|---|---:|---:|\n| forest | 1/2 (50.0%) | 3/4 (75.0%) |\n\n"
+        "The forests win on the coordinated one.\n\nCalibration: every bar flags 1.00%.\n"
+        "\n<details>\n<summary><b>DIRECT</b></summary>\n\ndetection grids\n\n</details>\n"
+    )
+    scored = _scored()
+    out = report._put_summary(readme, scored, rendered)
+    assert "stale hand-typed numbers" not in out
+    assert "| forest | 1/2 (50.0%) | 3/4 (75.0%) |" in out
+    assert "The forests win on the coordinated one." in out
+    assert "Calibration: every bar flags 1.00%." in out, "the calibration line travels with it"
+    assert "detection grids" not in out, "the folds are the report's, not the README's"
+    assert f"{len(scored):,} player-matches" in out
+    assert out.startswith("Author's prose above.") and out.rstrip().endswith(
+        "Author's prose below."
+    )
+
+
+def test_a_readme_without_markers_is_left_alone():
+    from fis.analysis import report
+
+    plain = "No markers here.\n"
+    assert report._put_summary(plain, _scored(), "## Headline\nx\n```\n") == plain

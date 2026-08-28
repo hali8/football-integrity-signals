@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 import zlib
 
 import numpy as np
@@ -62,6 +63,29 @@ EXCLUDED_METRICS = {
     ),
 }
 METRICS = RATE_METRICS + [f"{m}_per_90" for m in VOLUME_METRICS]
+
+#: Every mart column prepare() and residuals() read. The raw-data dependency
+#: an experiment stamp must cover.
+CONSUMED = (
+    "player_id",
+    "match_id",
+    "position_code",
+    "minutes_played",
+    "regulation_minutes",
+    "match_has_missing_substitution",
+    "has_mirrored_positions",
+    "is_eligible",
+    "passes",
+    "defensive_actions",
+    "touches_in_defensive_third",
+    "pass_completion_pct",
+    "defensive_action_success_pct",
+    "mean_action_x",
+    "passes_completed",
+    "passes_with_outcome",
+    "defensive_actions_successful",
+    "defensive_actions_with_outcome",
+)
 
 KEY_COLUMNS = ["match_id", "player_id", "team_id", "position_code", "minutes_played"]
 
@@ -184,18 +208,31 @@ def _leave_one_out(
     medians = np.full(n, np.nan)
     mads = np.full(n, np.nan)
     weights = np.full(n, np.nan)
-    for i in range(n):
-        others = np.delete(values, i)
-        others = others[~np.isnan(others)]
-        if len(others) == 0:
-            continue
-        median = np.median(others)
+    if n < 2:
+        return medians, mads, weights
+
+    # Every leave-one-out set at once: row i is `values` without element i.
+    # The loop this replaces ran two np.median calls PER ELEMENT, and at
+    # 43,993 rows x 6 metrics x a condition it was most of the campaign.
+    others = np.broadcast_to(values, (n, n))[~np.eye(n, dtype=bool)].reshape(n, n - 1)
+    present = ~np.isnan(others)
+    counts = present.sum(axis=1)
+
+    usable = counts > 0
+    # nanmedian is several times slower than median, and most players have no
+    # missing metric at all -- so pay for it only when something IS missing.
+    complete = bool(present.all())
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rows stay NaN
+        centres = np.median(others, axis=1) if complete else np.nanmedian(others, axis=1)
         if np.isfinite(centre) and np.isfinite(ratio):
-            weight = own_weight(len(others), ratio)
-            median = weight * median + (1.0 - weight) * centre
-            weights[i] = weight
-        medians[i] = median
-        mads[i] = np.median(np.abs(others - median))
+            weight = own_weight(counts, ratio)
+            centres = weight * centres + (1.0 - weight) * centre
+            weights[usable] = weight[usable]
+        medians[usable] = centres[usable]
+        deviation = np.abs(others - centres[:, None])
+        spread = np.median(deviation, axis=1) if complete else np.nanmedian(deviation, axis=1)
+    mads[usable] = spread[usable]
     return medians, mads, weights
 
 
@@ -339,6 +376,7 @@ def residuals(
     frame: pd.DataFrame,
     reference: pd.DataFrame | None = None,
     fitted: dict | None = None,
+    only: list[str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Attach a z per metric, plus which baseline each row was measured against.
 
@@ -346,6 +384,11 @@ def residuals(
     (default: ``frame``); an injection harness passes the clean frame so a
     planted row cannot shift its own reference. ``fitted`` accepts them
     precomputed -- see :func:`hyperparameters`. Also returns counts.
+
+    ``only`` restricts the recompute to those metrics, and the caller must
+    already carry z, sigma and weight for the rest. Each metric's z depends on
+    that metric alone, so an injection that moved one of them cannot change the
+    others -- and recomputing all six per condition was most of a campaign.
     """
     fitted = fitted or hyperparameters(frame if reference is None else reference)
     positions = fitted["positions"]
@@ -364,7 +407,7 @@ def residuals(
     frame["baseline_matches"] = eligible_per_player - 1
     counts["own_rows"] = len(frame)
 
-    for metric in METRICS:
+    for metric in only or METRICS:
         median = np.full(len(frame), np.nan)
         mad = np.full(len(frame), np.nan)
         mean = np.full(len(frame), np.nan)

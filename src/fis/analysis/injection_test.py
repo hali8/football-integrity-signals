@@ -18,8 +18,11 @@ label rather than under-delivering. A single mechanism through
 from __future__ import annotations
 
 import argparse
+import itertools
 import math
+import os
 import sys
+import time
 import warnings
 import zlib
 from pathlib import Path
@@ -277,6 +280,58 @@ MECHANISMS = {
     "throttle_defensive": throttle_defensive,
 }
 
+#: Identity fields every mechanism's view carries.
+COMMON_MECHANISM_INPUTS = ("player_id", "match_id")
+
+#: What each mechanism CONSUMES. compose() restricts the row to these plus the
+#: common set, so an undeclared read raises; raw_fingerprint() hashes them.
+MECHANISM_INPUTS = {
+    "defensive_success": (
+        "defensive_actions_successful",
+        "defensive_actions_with_outcome",
+    ),
+    "pass_completion": (
+        "passes_completed",
+        "passes_with_outcome",
+    ),
+    "remove_defensive": (
+        "defensive_actions",
+        "defensive_actions_with_outcome",
+        "defensive_actions_successful",
+        "defensive_actions_in_defensive_third",
+        "actions",
+        "touches_in_defensive_third",
+        "mean_action_x",
+        "attempts_with_position",
+        "sum_start_x_in_defensive_third",
+        "minutes_played",
+        "regulation_minutes",
+    ),
+    "relocate_upfield": (
+        "touches_in_defensive_third",
+        "defensive_actions_in_defensive_third",
+        "mean_action_x",
+        "attempts_with_position",
+        "sum_start_x_in_defensive_third",
+        "minutes_played",
+        "regulation_minutes",
+    ),
+    "throttle_defensive": (
+        "defensive_actions_successful",
+        "defensive_actions_with_outcome",
+    ),
+}
+
+
+def mechanism_view(name: str, row: pd.Series) -> pd.Series:
+    """``row`` restricted to what ``name`` declares, plus identity fields.
+
+    Identity is optional; a missing DECLARED input raises.
+    """
+    common = [c for c in COMMON_MECHANISM_INPUTS if c in row.index]
+    return row[common + list(MECHANISM_INPUTS[name])]
+
+
 #: Severity ladder per mechanism. throttle_defensive is a fraction of successes
 #: lost, not a sigma count; achieved is reported in count sd either way.
 LADDERS = {"throttle_defensive": (0.0, 0.20, 0.50)}
@@ -291,6 +346,19 @@ COMPOSITION_ORDER = (
     "defensive_success",
     "pass_completion",
 )
+
+
+def batch_size(players: int, jobs: int) -> int:
+    """Players per dispatch, scaled to the machine rather than pinned to it.
+
+    One at a time left the workers idle waiting on the parent. Too coarse and
+    the last worker runs alone while the rest sit finished, so aim at a few
+    batches each. A resource knob must never move a number -- joblib returns
+    batches in order, so this changes only how the work is handed out.
+    """
+    workers = os.cpu_count() or 1 if jobs in (-1, None) else abs(jobs)
+    return max(1, min(64, players // max(1, workers * 4)))
+
 
 #: Rows a player needs before his OWN spread sizes his injection rather than
 #: his position pool's; an sd from two points is too noisy to define "k sigma"
@@ -446,13 +514,16 @@ def compose(
             # it: removal succeeding is precisely what collapses a later
             # relabelling's capacity, so the horizon cannot be costed up front.
             horizon = ordered[position:]
-            caps = [CAPACITIES[n](working, sds) for n in horizon]
+            caps = [CAPACITIES[n](mechanism_view(n, working), sds) for n in horizon]
             scaled = allocate(math.sqrt(max(budget, 0.0)), caps)[0]
             budget -= scaled**2
         control = CONTROLS[name]
         before = float(working[control])
         denominator = float(working[RATE_CONTROLS[name][1]]) if name in RATE_CONTROLS else np.nan
-        updates = MECHANISMS[name](working, sds, scaled, rng_for(name, scaled))
+        # The view is the enforcement: an undeclared read raises here.
+        updates = MECHANISMS[name](
+            mechanism_view(name, working), sds, scaled, rng_for(name, scaled)
+        )
         # Strip the clamp marker before it can be written as a column.
         was_clipped = bool(updates.pop(CLIPPED, False))
         for column, value in updates.items():
@@ -587,12 +658,110 @@ def target_choices(
     def median_row(frame: pd.DataFrame, column: str) -> dict:
         usable = frame.dropna(subset=[column])
         typical = usable.groupby("player_id")[column].transform("median")
-        pick = usable.assign(_d=(usable[column] - typical).abs()).sort_values("_d")
+        # match_id breaks equal-distance ties, which frame order otherwise decides.
+        pick = usable.assign(_d=(usable[column] - typical).abs()).sort_values(["_d", "match_id"])
         pick = pick.groupby("player_id").head(1)
         return dict(zip(pick["player_id"], pick["match_id"]))
 
     default = median_row(clean_scores, "max")
     return default, {s: median_row(clean_scores, s) for s in scorers}
+
+
+def draw_rng(seed: int, player_id, match_id, mechanism_name: str, scaled_k: float):
+    """The stream for one (row, mechanism, dose).
+
+    ``match_id`` keeps a changed target off another row's stream; no scorer, so
+    two scorers on one target draw identically.
+    """
+    return np.random.default_rng(
+        [seed, zlib.crc32(f"{player_id}|{match_id}|{mechanism_name}|{scaled_k}".encode())]
+    )
+
+
+def canonical_recipe(
+    *,
+    forest: bool = False,
+    design: str = "persistent",
+    seed: int = SEED,
+    metrics: list[str] | None = None,
+    scorers: tuple[str, ...] | None = None,
+    severities: tuple[float, ...] | None = None,
+    mechanisms: dict | None = None,
+    compositions: dict[str, tuple[str, ...]] | None = None,
+) -> dict:
+    """Every default resolved ONCE, order preserved.
+
+    :func:`run` and :func:`campaign_config` both read this, so the runner and
+    the stamp cannot resolve a default differently.
+    """
+    return {
+        "forest": bool(forest),
+        "design": design,
+        "seed": seed,
+        "metrics": list(metrics) if metrics is not None else list(baseline.METRICS),
+        "scorers": tuple(scorers)
+        if scorers is not None
+        else SCORERS + (FOREST_SCORERS if forest else ()),
+        "severities": tuple(severities) if severities is not None else SEVERITIES,
+        # {} means "no single-mechanism conditions", so it is not a default.
+        "mechanisms": dict(mechanisms) if mechanisms is not None else dict(MECHANISMS),
+        "compositions": {k: tuple(v) for k, v in (compositions or {}).items()},
+    }
+
+
+def consumed_columns() -> list[str]:
+    """Every raw column the experiment reads. Order-stable, deduplicated."""
+    seen = dict.fromkeys(baseline.CONSUMED)
+    for inputs in MECHANISM_INPUTS.values():
+        seen.update(dict.fromkeys(inputs))
+    return list(seen)
+
+
+def raw_fingerprint(raw: pd.DataFrame) -> str:
+    """Content hash of the FULL raw dependency, in canonical row order.
+
+    Non-target rows reach the position-level fits, so a raw edit outside the
+    scored subset can move target scores with the scored hash unmoved. Covers
+    the consumed columns only: an unconsumed edit must not invalidate a run.
+    """
+    import hashlib
+
+    columns = consumed_columns()
+    keyed = raw.loc[:, columns].sort_values(["player_id", "match_id"], kind="mergesort")
+    doubled = keyed.duplicated(["player_id", "match_id"])
+    if doubled.any():
+        pairs = keyed.loc[doubled, ["player_id", "match_id"]].head(3).to_records(index=False)
+        raise ValueError(f"raw frame has duplicate (player_id, match_id) keys, e.g. {list(pairs)}")
+    rows = pd.util.hash_pandas_object(keyed, index=False)
+    digest = hashlib.sha256()
+    digest.update("|".join(["raw-v1", str(len(keyed)), *columns]).encode())
+    digest.update(rows.to_numpy().tobytes())
+    return digest.hexdigest()[:16]
+
+
+def campaign_config(scoring: str, recipe: dict, raw: pd.DataFrame) -> str:
+    """The one stamp string for an injection campaign.
+
+    Adds what :func:`heldout.results_config` cannot see: the resolved recipe,
+    order preserved, and the full-raw fingerprint. Mechanisms stamp by
+    REGISTERED NAME -- a callable repr can carry a process address, so an
+    unregistered one is refused rather than given an unstable identity.
+    """
+    strangers = [n for n, fn in recipe["mechanisms"].items() if MECHANISMS.get(n) is not fn]
+    if strangers:
+        raise ValueError(
+            f"cannot stamp unregistered mechanisms {strangers}; register them in "
+            "MECHANISMS (and MECHANISM_INPUTS) or run unstamped"
+        )
+    core = heldout.results_config(scoring, recipe["seed"], recipe["design"])
+    composed = ";".join(f"{n}={'+'.join(p)}" for n, p in recipe["compositions"].items())
+    return (
+        f"{core}|scorers={','.join(recipe['scorers'])}"
+        f"|severities={','.join(f'{s:g}' for s in recipe['severities'])}"
+        f"|mechanisms={','.join(recipe['mechanisms'])}"
+        f"|compositions={composed}"
+        f"|raw={raw_fingerprint(raw)}"
+    )
 
 
 def run(
@@ -607,6 +776,8 @@ def run(
     jobs: int = 1,
     forest: bool = False,
     design: str = "persistent",
+    progress: bool = False,
+    scorers: tuple[str, ...] | None = None,
 ) -> pd.DataFrame:
     """One match per player perturbed by every mechanism at every severity.
 
@@ -634,10 +805,13 @@ def run(
             after the detector was built. No collateral by construction, and cheap
             enough to afford forests.
 
-        Target scores are IDENTICAL under both: a target's leave-one-out fit
-        excludes the target and the position pools are pinned to the clean frame,
-        so an injection cannot move its own score. The designs differ only in
-        whether the rest of the player's history is rescored.
+        A target's own raw-metric fit is identical under both: leave-one-out
+        excludes the target, and the position pools are pinned to the clean
+        frame. The RESIDUAL fits differ by design: heldout trains them on the
+        clean frame's residuals -- the same cohort the census fitted, as if the
+        target arrived after the detector was built -- while persistent trains
+        on residuals whose baselines contain the perturbed target, because a
+        manipulation sitting in the history is the thing it measures.
     """
     if design not in ("persistent", "heldout"):
         raise ValueError(f"design must be persistent or heldout; got {design!r}")
@@ -653,9 +827,21 @@ def run(
             "-- a census cached before a rename or without forests is stale"
         )
     warnings.filterwarnings("ignore")
-    mechanisms = MECHANISMS if mechanisms is None else mechanisms
-    compositions = compositions or {}
-    metrics = list(metrics) if metrics is not None else list(baseline.METRICS)
+    # One resolution path for runner and stamp, so defaults cannot diverge.
+    recipe = canonical_recipe(
+        forest=forest,
+        design=design,
+        seed=seed,
+        metrics=metrics,
+        scorers=scorers,
+        severities=severities,
+        mechanisms=mechanisms,
+        compositions=compositions,
+    )
+    mechanisms = recipe["mechanisms"]
+    compositions = recipe["compositions"]
+    metrics = recipe["metrics"]
+    severities = recipe["severities"]
     pos_sds = position_spreads(scored)
     # Hyperparameters from the clean frame, computed once.
     fitted = baseline.hyperparameters(baseline.prepare(raw), jobs=jobs)
@@ -679,11 +865,22 @@ def run(
         position_nu_z[position] = heldout.covariance_nu(pz, frame_z["player_id"].to_numpy())
 
     keys = ["player_id", "match_id"]
-    scorers = SCORERS + (FOREST_SCORERS if forest else ())
+    # A targeted run asks for a subset -- the collateral question needs the two
+    # forests on the coordinated condition, not all seven on all six recipes.
+    scorers = recipe["scorers"]
     targets = select_targets(scored, census, scorers=scorers)
     target_rows = {(p, m) for p, m, _ in targets}
 
-    def score_frame(frame: pd.DataFrame, wanted: set | None = None) -> pd.DataFrame:
+    #: The clean pass's residual frame, kept so a condition can carry the
+    #: metrics its injection did not move instead of recomputing them.
+    unmoved: dict = {}
+    #: (raw fit, residual fit) by (player, match), built ONCE by the clean pass.
+    #: Heldout must train on CLEAN rows or the injection leaks into its own bar.
+    held_fits: dict | None = {} if design == "heldout" else None
+
+    def score_frame(
+        frame: pd.DataFrame, wanted: set | None = None, remember: bool = False
+    ) -> pd.DataFrame:
         """Every row scored through the residual path, position
         reference pinned to the clean frame. The player's own history is left
         contaminated on purpose -- that is what the collateral columns measure.
@@ -694,56 +891,83 @@ def run(
         other scorer's target set cannot leak into this scorer's collateral,
         where it would be a near-median subset masquerading as the population.
         """
-        rescored, _ = baseline.residuals(baseline.prepare(frame), fitted=fitted)
+        prepared = baseline.prepare(frame)
+        only = None
+        was = unmoved.get("frame")
+        if was is not None:
+            # Which metrics moved, read off the data. Each z depends on its
+            # own metric, so the rest are carried rather than recomputed.
+            pair = ["player_id", "match_id"]
+            lined = prepared[pair + list(baseline.METRICS)].merge(
+                was[pair + list(baseline.METRICS)], on=pair, suffixes=("", "_was")
+            )
+            only = [
+                m
+                for m in baseline.METRICS
+                if not np.allclose(lined[m], lined[f"{m}_was"], equal_nan=True)
+            ]
+            carried = [
+                c
+                for m in baseline.METRICS
+                if m not in only
+                for c in (f"z_{m}", f"sigma_{m}", f"weight_{m}")
+            ]
+            prepared = prepared.merge(was[pair + carried], on=pair, how="left")
+        rescored, _ = baseline.residuals(prepared, fitted=fitted, only=only)
+        if remember:
+            unmoved["frame"] = rescored.copy()
         rescored = rescored[rescored["is_scoreable"]]
         flagged = baseline.flag(rescored, baseline.DEFAULT_FLAG_RATE)
 
-        def one_player(g: pd.DataFrame) -> list[dict]:
-            out = []
-            position = g["position_code"].iloc[0]
+        # The clean pass builds the fits; later passes look them up.
+        collect = held_fits is not None and not held_fits
+
+        def one_player(lo: int, hi: int) -> tuple[list[dict], list[tuple]]:
+            out: list[dict] = []
+            built: list[tuple] = []
+            position = every_pos[lo]
             if position not in position_fits:
-                return out
+                return out, built
             pool_fit, pool_z = position_fits[position], position_z.get(position)
-            player_id = g["player_id"].iloc[0]
-            complete = g.dropna(subset=metrics)
-            cx = complete[metrics].to_numpy(dtype=float)
-            cz = complete[zcols].to_numpy(dtype=float)
-            cids = complete["match_id"].to_numpy()
-            for x, zrow, mid, top in zip(
-                g[metrics].to_numpy(dtype=float),
-                g[zcols].to_numpy(dtype=float),
-                g["match_id"].to_numpy(),
-                g["max_abs_z"].to_numpy(),
-            ):
+            player_id = every_pid[lo]
+            mine_x, mine_z = every_x[lo:hi], every_z[lo:hi]
+            mine_mid, mine_top = every_mid[lo:hi], every_top[lo:hi]
+            whole = ~np.isnan(mine_x).any(axis=1)  # == dropna(subset=metrics)
+            cx, cz, cids = mine_x[whole], mine_z[whole], mine_mid[whole]
+            for x, zrow, mid, top in zip(mine_x, mine_z, mine_mid, mine_top, strict=True):
                 if wanted is not None and (player_id, mid) not in wanted:
                     continue
-                keep = cids != mid
-                fit = pool_fit
-                if keep.sum() >= 2:
-                    fit = heldout._Fit(
-                        cx[keep],
-                        target=pool_fit.cov,
-                        weight=heldout.shrinkage_weight(
-                            int(keep.sum()), position_nu.get(position, np.inf)
-                        ),
-                        pool=position_rows.get(position),
-                        seed=heldout.borrow_seed(player_id),
-                    )
-                ztrain = cz[keep]
-                ztrain = ztrain[~np.isnan(ztrain).any(axis=1)]
-                # The SAME fallback the census uses, or the score and the bar
-                # come from differently fitted populations.
-                zfit = pool_z
-                if len(ztrain) >= 2:
-                    zfit = heldout._Fit(
-                        ztrain,
-                        target=pool_z.cov if pool_z is not None else None,
-                        weight=heldout.shrinkage_weight(
-                            len(ztrain), position_nu_z.get(position, np.inf)
-                        ),
-                        pool=position_z_rows.get(position) if forest else None,
-                        seed=heldout.borrow_seed(player_id),
-                    )
+                if held_fits:
+                    # Raises on a missing key: no fit is a design violation.
+                    fit, zfit = held_fits[(player_id, mid)]
+                else:
+                    keep = cids != mid
+                    fit = pool_fit
+                    if keep.sum() >= 2:
+                        fit = heldout._Fit(
+                            cx[keep],
+                            target=pool_fit.cov,
+                            weight=heldout.shrinkage_weight(
+                                int(keep.sum()), position_nu.get(position, np.inf)
+                            ),
+                            pool=position_rows.get(position),
+                            seed=heldout.borrow_seed(player_id),
+                        )
+                    ztrain = cz[keep]
+                    ztrain = ztrain[~np.isnan(ztrain).any(axis=1)]
+                    # The SAME fallback the census uses, or the score and the
+                    # bar come from differently fitted populations.
+                    zfit = pool_z
+                    if len(ztrain) >= 2:
+                        zfit = heldout._Fit(
+                            ztrain,
+                            target=pool_z.cov if pool_z is not None else None,
+                            weight=heldout.shrinkage_weight(
+                                len(ztrain), position_nu_z.get(position, np.inf)
+                            ),
+                            pool=position_z_rows.get(position) if forest else None,
+                            seed=heldout.borrow_seed(player_id),
+                        )
                 zdist = zfit.distance(zrow) if zfit is not None else np.nan
                 fres = fres_norm = np.nan
                 if forest and zfit is not None:
@@ -764,20 +988,43 @@ def run(
                     record["forest_res_norm"] = fres_norm
                 record.update(dict(zip(zcols, zrow)))
                 out.append(record)
-            return out
+                if collect:
+                    # Scoring warmed the lazy forests, so these return fitted.
+                    built.append(((player_id, mid), (fit, zfit)))
+            return out, built
 
         # Same shape as heldout.score_all's loop, and parallelised the same
         # way: each player is independent, the closed-over fits are read-only,
         # and joblib returns batches in order so the frame is draw-for-draw
         # identical to the serial path.
-        histories = [g for _, g in flagged.groupby("player_id")]
-        if jobs and jobs != 1:
+        # Hoisted ONCE and closed over, not sliced per task: joblib memmaps
+        # arrays this size, so ten workers share one copy instead of unpickling
+        # a frame slice each. Tasks carry two integers.
+        ordered = flagged.sort_values("player_id", kind="stable")
+        every_x = ordered[metrics].to_numpy(dtype=float)
+        every_z = ordered[zcols].to_numpy(dtype=float)
+        every_mid = ordered["match_id"].to_numpy()
+        every_top = ordered["max_abs_z"].to_numpy()
+        every_pid = ordered["player_id"].to_numpy()
+        every_pos = ordered["position_code"].to_numpy()
+        edges = np.flatnonzero(np.r_[True, every_pid[1:] != every_pid[:-1], True])
+        histories = list(itertools.pairwise(edges))
+        # Lookup passes stay serial: dispatching would pickle the fit map to
+        # every worker for scoring that is already cheap.
+        if jobs and jobs != 1 and not (held_fits is not None and held_fits):
             from joblib import Parallel, delayed
 
-            batches = Parallel(n_jobs=jobs)(delayed(one_player)(g) for g in histories)
+            # A player is a small task and the frame slice is pickled per
+            # call, so one-per-dispatch left the workers waiting on the parent.
+            batches = Parallel(n_jobs=jobs, batch_size=batch_size(len(histories), jobs))(
+                delayed(one_player)(lo, hi) for lo, hi in histories
+            )
         else:
-            batches = [one_player(g) for g in histories]
-        return pd.DataFrame([r for batch in batches for r in batch])
+            batches = [one_player(lo, hi) for lo, hi in histories]
+        if collect:
+            for _, built in batches:
+                held_fits.update(built)
+        return pd.DataFrame([r for records, _ in batches for r in records])
 
     # Every player's spread, computed once from clean data -- always over the
     # FULL metric set, so the injection does not change with ``metrics``.
@@ -788,7 +1035,10 @@ def run(
     by_key = raw.set_index(keys)
     # Heldout scores only targets, so the clean pass needs the union across
     # scorers (each scorer reads its own targets' clean values from it).
-    clean = score_frame(raw, wanted=target_rows if design == "heldout" else None)
+    clean = score_frame(raw, wanted=target_rows if design == "heldout" else None, remember=True)
+    if held_fits is not None:
+        # Empty here means the workers built nothing: KeyError on every row.
+        assert held_fits, "heldout clean pass returned no fits to the parent"
     clean = clean.set_index(keys)
 
     # Singles are one-mechanism recipes through the same compose() path.
@@ -796,6 +1046,7 @@ def run(
     recipes += [(name, tuple(parts)) for name, parts in compositions.items()]
 
     rows = []
+    done, opened = 0, time.monotonic()
     for scorer in scorers:
         chosen = {p: m for p, m, sc in targets if sc == scorer}
         for name, parts in recipes:
@@ -813,15 +1064,8 @@ def run(
                         continue
                     test = by_key.loc[(player_id, match_id)]
 
-                    def rng_for(mechanism_name, scaled_k, player_id=player_id, scorer=scorer):
-                        return np.random.default_rng(
-                            [
-                                seed,
-                                zlib.crc32(
-                                    f"{player_id}|{scorer}|{mechanism_name}|{scaled_k}".encode()
-                                ),
-                            ]
-                        )
+                    def rng_for(mechanism_name, scaled_k, player_id=player_id, match_id=match_id):
+                        return draw_rng(seed, player_id, match_id, mechanism_name, scaled_k)
 
                     updates, steps = compose(test, spreads.get(player_id, {}), k, parts, rng_for)
                     if not updates or all(
@@ -876,8 +1120,19 @@ def run(
                         mask = (fixed["player_id"] == player_id) & (fixed["match_id"] == match_id)
                         for column, value in updates.items():
                             fixed.loc[mask, column] = value
+                    began = time.monotonic()
                     after = score_frame(fixed, wanted=mine if design == "heldout" else None)
                     after = after.set_index(keys)
+                    # A campaign is over an hour of silence otherwise, with no
+                    # way to tell progress from a hang.
+                    if progress:
+                        done += 1
+                        print(
+                            f"  [{done:>3}] {scorer:<16}{name:<20}k={k:<5}"
+                            f"{time.monotonic() - began:6.1f}s"
+                            f"  ({time.monotonic() - opened:5.0f}s total)",
+                            flush=True,
+                        )
 
                 shared = clean.index.intersection(after.index)
                 for key in shared:
@@ -925,11 +1180,11 @@ def run(
 
 
 def _auc(reference: np.ndarray, hot: np.ndarray) -> float:
-    """P(a perturbed row outranks a random clean one), ties counted half.
+    """Cohort-referenced two-sample Mann-Whitney AUC, ties counted half.
 
-    Threshold-free, so it separates "cannot see the perturbation" from "sees
-    it but the bar is too far out to act on it" -- the distinction that once
-    stopped this project reading a noisy detection delta as a gain.
+    P(a row from ``hot`` outranks one from ``reference``): two distributions,
+    NOT per-row pairs. Threshold-free at the specified dose, so it separates
+    "cannot see the perturbation" from "sees it but the bar is too far out".
 
     NaN is dropped from the reference. A NaN score cannot be flagged, matching
     flag(), so in the perturbed set it sinks to -inf rather than being
@@ -997,13 +1252,8 @@ def cell_statistics(
                 gained_dosed = (
                     float((~was & hit)[dosed].mean()) if n_dosed and not composed_block else np.nan
                 )
-                # PAIRED against the same rows' own clean scores, not against
-                # the population. Targets are median-selected, so a population
-                # reference gives each scorer a different no-skill floor
-                # (0.483 to 0.518 measured) and makes them incomparable. Paired,
-                # selection cancels: at k=0 every floor is exactly 0.5.
-                # Rows the scorer could not score clean have no baseline to move
-                # from, so they are out of scope rather than misses.
+                # Cohort clean vs after: two samples, not per-row pairs, and
+                # not the population, which floors each scorer differently.
                 auc = np.nan
                 paired = t & r["clean"].notna()
                 if paired.any():
@@ -1055,6 +1305,15 @@ def cell_statistics(
                         "achieved": (
                             float(r.loc[t, "achieved"].mean())
                             if n and "achieved" in r.columns and not composed_block
+                            else np.nan
+                        ),
+                        # One currency across mechanisms, and the check that
+                        # different scorers' targets took comparable doses.
+                        "delivered_z": (
+                            float(r.loc[t, "achieved_z"].mean())
+                            if n
+                            and "achieved_z" in r.columns
+                            and r.loc[t, "achieved_z"].notna().any()
                             else np.nan
                         ),
                         "clipped": (

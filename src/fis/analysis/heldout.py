@@ -123,15 +123,16 @@ def scoring_config(
     return f"metrics={chosen}|forest={bool(forest)}|players={limit_players}"
 
 
-def results_config(scoring: str, seed: int) -> str:
+def results_config(scoring: str, seed: int, design: str = "heldout") -> str:
     """What changes an injection run's output beyond the code and the frame.
 
-    Separate from :func:`scoring_config` because the census does NOT depend on
-    the injection seed while the results do -- stamping both with the scoring
+    Separate from :func:`scoring_config` because the census depends on neither
+    the injection seed nor the design while the results depend on both -- a
+    persistent run scores every row and a held-out one only the targets -- stamping both with the scoring
     settings alone lets a run under one seed be reused under another. The design
     constants move with the injection_test code fingerprint already.
     """
-    return f"{scoring}|seed={seed}"
+    return f"{scoring}|seed={seed}|design={design}"
 
 
 def fingerprint(scored: pd.DataFrame, extra: tuple = (), config: str = "") -> str:
@@ -494,6 +495,9 @@ def score_all(
     if jobs and jobs != 1:
         from joblib import Parallel, delayed
 
+        # Left on joblib's 'auto' deliberately: a fixed batch measured SLOWER
+        # here (census 7 -> 13 min) while helping the injection loop, so the
+        # knob is per-loop rather than one number applied everywhere.
         batches = Parallel(n_jobs=jobs)(delayed(one_player)(pid, g) for pid, g in histories)
     else:
         batches = [one_player(pid, g) for pid, g in histories]

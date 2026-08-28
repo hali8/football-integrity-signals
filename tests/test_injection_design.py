@@ -423,14 +423,14 @@ def test_auc_does_not_move_with_the_bar():
     assert tight.iloc[0]["recovery"] != loose.iloc[0]["recovery"], "the bar must matter"
 
 
-def test_auc_is_paired_so_every_floor_is_exactly_one_half():
-    """AUC compares each row against its OWN clean score, not against the
-    population. A population reference gives every scorer a different no-skill
-    floor -- 0.483 to 0.518 measured -- because targets are median-selected, and
-    that makes the scorers incomparable. Paired, the selection cancels: with
-    nothing injected the two sides are the same multiset, so P(a>b) = P(b>a) and
-    ties count half, putting the floor at exactly 0.5 whatever the scores look
-    like."""
+def test_auc_is_cohort_referenced_so_every_floor_is_exactly_one_half():
+    """AUC compares the target cohort's clean and after DISTRIBUTIONS -- a
+    two-sample Mann-Whitney, not per-row pairs, and not the population. A
+    population reference gives every scorer a different no-skill floor -- 0.483
+    to 0.518 measured -- because targets are median-selected. Against the
+    cohort's own clean scores, k=0 makes the two sides the same multiset, so
+    P(a>b) = P(b>a) and ties count half, putting the floor at exactly 0.5
+    whatever the scores look like."""
     null = _cells()
     null["after"] = null["clean"]
     stats = injection_test.cell_statistics(null, {"mahalanobis": 5.0})
