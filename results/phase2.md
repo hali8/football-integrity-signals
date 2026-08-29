@@ -1,7 +1,8 @@
 <!-- fis-analysis=ede099295479b3fb -->
-<!-- fis-render=2727c6ba4631750d -->
+<!-- fis-render=e52145fd2e16eb00 -->
 <!-- fis-runtime=python=3.12.13,numpy=2.5.2,pandas=3.0.5,scipy=1.18.0,scikit-learn=1.9.0,joblib=1.5.3,pyarrow=25.0.0,matplotlib=3.11.1 -->
 <!-- fis-results=v1.16b25f07a0583641.ede099295479b3fb.869ccb52 -->
+<!-- fis-collateral=collateral-forest.parquet:v1.16b25f07a0583641.ede099295479b3fb.86ceea59,collateral.parquet:v1.16b25f07a0583641.ede099295479b3fb.69feb6cc -->
 # Injection sensitivity
 
 `fis-report`, 2026-08-29. 43,993 player-matches / 2,140 players; severity ladder k = (0.0, 1.0, 1.5, 3.0); bars at 1% and 5%; agreement matrices on `correlated:3`.
@@ -432,7 +433,7 @@ caught: max 39, mahalanobis 22, forest 37, forest_norm 43, mahalanobis_res 40, f
 
 Injecting one match barely moves the rest of the player's history. Over 63 measured conditions the largest median shift is **-0.0494 sd** (`max`, pass_completion k=3) against a 1% bar, and the flagged share of other matches stays within 0.88%–1.10% of a 1.05% baseline. Almost nothing crosses.
 
-The shift is downward in 58 of 63 conditions. That is the expected direction: leaving a perturbed row in the player's history widens his own scale estimate, and a wider spread deflates every other row's z, so contamination makes the remaining matches look slightly LESS anomalous rather than more.
+The shift is downward in 58 of 63 conditions -- consistent with contamination widening the player's own scale estimate, since a wider spread deflates every other row's z and makes the remaining matches look slightly LESS anomalous. These transformations are nonlinear, so that is a reading of the observed direction rather than a property guaranteed for every history.
 
 The flagged share still ticks up in 21 conditions, 12 of them `max` — it reads the MAXIMUM of six per-metric z's, so when the perturbed metric's z is deflated the maximum can simply move to another metric. The multivariate scorers have no such escape.
 

@@ -7,7 +7,10 @@ Each pins a remedy's property rather than its implementation.
 
 from __future__ import annotations
 
+import argparse
 import inspect
+import pathlib
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -234,14 +237,6 @@ def test_run_resolves_through_the_canonical_recipe():
 
 
 # ------------------------------------------------- publication gate (B3) --
-
-
-def test_only_the_full_recipe_is_canonical():
-    assert report.is_canonical(None, True, "heldout", injection_test.SEED)
-    assert not report.is_canonical(50, True, "heldout", injection_test.SEED), "--n is diagnostic"
-    assert not report.is_canonical(None, False, "heldout", injection_test.SEED)
-    assert not report.is_canonical(None, True, "persistent", injection_test.SEED)
-    assert not report.is_canonical(None, True, "heldout", 123)
 
 
 def test_the_readme_write_is_guarded_by_the_gate():
@@ -564,3 +559,102 @@ def test_a_valueless_fis_marker_does_not_break_freshness():
     text = _report_text() + f"\n{report.HEADLINE_END}\n\nprose\n"
     state, _ = report.freshness(text)
     assert state in {"fresh", "render", "analysis", "runtime", "payload"}
+
+
+# ------------------------------------------------- publication gate (B3) --
+
+
+def _args(**over):
+    base = {
+        "n": None,
+        "forest": True,
+        "design": "heldout",
+        "seed": injection_test.SEED,
+        "headline": report.PUBLICATION["headline"],
+        "stale_ok": False,
+        "collateral": [f"data/reports/{a}" for a in report.COLLATERAL_ARMS],
+    }
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_the_publication_recipe_is_canonical():
+    assert report.is_canonical(_args())
+
+
+@pytest.mark.parametrize(
+    ("what", "over"),
+    [
+        ("player cap", {"n": 50}),
+        ("no forests", {"forest": False}),
+        ("other design", {"design": "persistent"}),
+        ("other seed", {"seed": 1}),
+        # --headline drives the headline table AND both agreement matrices, so a
+        # run under another one is a different report.
+        ("other headline", {"headline": "remove_defensive:1.5"}),
+        ("stale render", {"stale_ok": True}),
+        ("no collateral", {"collateral": None}),
+        ("one arm only", {"collateral": ["data/reports/collateral.parquet"]}),
+        ("duplicate arm", {"collateral": ["data/reports/collateral.parquet"] * 2}),
+        ("foreign arm", {"collateral": ["data/reports/something-else.parquet"]}),
+    ],
+)
+def test_anything_but_the_recipe_is_not_canonical(what, over):
+    assert not report.is_canonical(_args(**over)), f"{what} must not be canonical"
+
+
+def test_a_noncanonical_run_refuses_the_publication_path():
+    assert Path(report.PUBLICATION["out"]).resolve() in report.publication_paths()
+
+
+# ------------------------------------------------- collateral provenance (B2) --
+
+
+def test_every_collateral_arm_has_a_declared_recipe():
+    assert set(report.COLLATERAL_ARMS) == {"collateral.parquet", "collateral-forest.parquet"}
+    for arm in report.COLLATERAL_ARMS:
+        assert "forest" in report.COLLATERAL_ARMS[arm], f"{arm} must declare its forest setting"
+
+
+def test_the_two_arms_stamp_differently():
+    """Swapping the arms must be refused, which needs their configs to differ."""
+    raw = _raw()
+    a, _ = report.collateral_config("collateral.parquet", raw)
+    b, _ = report.collateral_config("collateral-forest.parquet", raw)
+    assert a != b
+
+
+def test_a_report_declaring_missing_collateral_is_not_fresh(tmp_path):
+    _payload(tmp_path / "phase2.parquet", "abc")
+    text = _report_text() + f"\n<!-- {report.COLLATERAL_STAMP}=collateral.parquet:zzz -->\n"
+    state, detail = report.freshness(text, results=tmp_path / "phase2.parquet")
+    assert state == "payload" and "collateral" in detail
+
+
+def test_a_report_declaring_swapped_collateral_is_not_fresh(tmp_path):
+    _payload(tmp_path / "phase2.parquet", "abc")
+    _payload(tmp_path / "collateral.parquet", "a-different-arm")
+    text = _report_text() + f"\n<!-- {report.COLLATERAL_STAMP}=collateral.parquet:zzz -->\n"
+    state, _ = report.freshness(text, results=tmp_path / "phase2.parquet")
+    assert state == "payload"
+
+
+def test_matching_collateral_is_fresh(tmp_path):
+    _payload(tmp_path / "phase2.parquet", "abc")
+    _payload(tmp_path / "collateral.parquet", "zzz")
+    text = _report_text() + f"\n<!-- {report.COLLATERAL_STAMP}=collateral.parquet:zzz -->\n"
+    state, _ = report.freshness(text, results=tmp_path / "phase2.parquet")
+    assert state == "fresh"
+
+
+# ------------------------------------------------- the hook (B1) --
+
+
+def test_the_hook_re_renders_through_the_publication_recipe():
+    """The hook spelled the recipe out itself, omitted --results, and so
+    resolved a payload path that does not exist -- turning a seconds-long
+    re-render into a full campaign that also dropped collateral."""
+    source = pathlib.Path("scripts/report_freshness.py").read_text()
+    assert '"--publish"' in source, "the hook must use the one recipe"
+    assert '"--census"' not in source, "spelling the recipe out again is how it drifted"
+    assert "85 min" not in source, "the withdrawn timing must not be quoted"

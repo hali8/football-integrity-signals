@@ -62,18 +62,10 @@ def main() -> int:
     if state == "render":
         print(f"{REPORT}: {detail}\n  re-rendering...")
         done = subprocess.run(
-            # Canonical recipe and cached census, or the stamp refuses the
-            # saved results and the hook refits.
-            [
-                sys.executable,
-                "-m",
-                "fis.analysis.report",
-                "--forest",
-                "--census",
-                str(paths.report_dir() / "census.parquet"),
-                "--out",
-                str(REPORT),
-            ],
+            # --publish IS the recipe: census, results and both collateral arms.
+            # Spelling it out here once cost a re-render that could not find the
+            # cached payload and started a whole campaign instead.
+            [sys.executable, "-m", "fis.analysis.report", "--publish"],
             env={**__import__("os").environ, "PYTHONPATH": "src"},
             check=False,  # the returncode is inspected below, both ways
         )
@@ -86,7 +78,7 @@ def main() -> int:
     print(
         f"{REPORT}: {detail}\n"
         "  This cannot be fixed by re-rendering. Either:\n"
-        "    fis-report --forest --jobs -1     re-run the campaign (~85 min), or\n"
+        "    fis-report --publish --jobs -1    re-run the campaign (long), or\n"
         "    fis-report --mark-stale           label the published numbers stale\n"
         "  then stage the result. To commit anyway: SKIP=report-freshness git commit"
     )

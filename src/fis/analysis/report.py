@@ -67,6 +67,9 @@ ANALYSIS_STAMP = "fis-analysis"
 RENDER_STAMP = "fis-render"
 RUNTIME_STAMP = "fis-runtime"
 RESULTS_STAMP = "fis-results"
+#: One line naming every collateral arm the report claims, with its fingerprint,
+#: so a report cannot present collateral whose payload has since moved.
+COLLATERAL_STAMP = "fis-collateral"
 #: Column and scorer renames, applied ONLY under --stale-ok so an artefact from
 #: before a rename can still be rendered. Never on the normal path, where the
 #: stamp refuses stale input outright.
@@ -106,7 +109,11 @@ def _runtime() -> str:
     return ",".join(parts)
 
 
-def _stamps(stale: bool = False, results_stamp: str | None = None) -> dict[str, str]:
+def _stamps(
+    stale: bool = False,
+    results_stamp: str | None = None,
+    collateral_stamps: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Current hashes for everything a rendered report depends on.
 
     ``stale`` poisons the analysis stamp so a report rendered from rejected
@@ -119,6 +126,10 @@ def _stamps(stale: bool = False, results_stamp: str | None = None) -> dict[str, 
     }
     if results_stamp is not None:
         stamps[RESULTS_STAMP] = "stale" if stale else results_stamp
+    if collateral_stamps:
+        stamps[COLLATERAL_STAMP] = ",".join(
+            f"{name}:{fp}" for name, fp in sorted(collateral_stamps.items())
+        )
     return stamps
 
 
@@ -176,6 +187,24 @@ def freshness(text: str, results: Path | None = None) -> tuple[str, str]:
                 f"the results at {results} are not the ones this report was rendered "
                 "from -- re-render from the right payload or re-run"
             )
+    declared = found.get(COLLATERAL_STAMP)
+    if declared and results is not None and results.parent.exists():
+        import pyarrow.parquet as pq
+
+        for entry in declared.split(","):
+            arm, _, want = entry.partition(":")
+            where = results.parent / arm
+            if not where.exists():
+                return "payload", (
+                    f"the report declares collateral from {arm}, which is missing at "
+                    f"{where} -- its section rests on results that are not there"
+                )
+            got = (pq.read_schema(where).metadata or {}).get(b"fis_fingerprint", b"").decode()
+            if got != want:
+                return "payload", (
+                    f"the collateral at {where} is not what this report was rendered "
+                    "from -- re-render from the right arm or re-run it"
+                )
     if found.get(RENDER_STAMP) != now[RENDER_STAMP]:
         return "render", "only the renderer changed -- re-render from the saved results"
     return "fresh", "matches the code as it stands"
@@ -852,6 +881,7 @@ def build(
     stale: bool = False,
     results_stamp: str | None = None,
     collateral: pd.DataFrame | None = None,
+    collateral_stamps: dict[str, str] | None = None,
 ) -> str:
     """Every table, from one results frame.
 
@@ -871,7 +901,7 @@ def build(
     )
     mechanism, severity = headline
     parts = [
-        *(f"<!-- {k}={v} -->" for k, v in _stamps(stale, results_stamp).items()),
+        *(f"<!-- {k}={v} -->" for k, v in _stamps(stale, results_stamp, collateral_stamps).items()),
         "# Injection sensitivity\n",
         _context(scored, rates, headline),
         headline_summary(per_rate[min(rates)], min(rates), headline),
@@ -951,7 +981,9 @@ def collateral_section(stats: pd.DataFrame, rate: float) -> str:
 
     # The condition every scorer shares: the forests were run on it alone.
     shared = live[live.mechanism == "correlated"].sort_values(["tally", "severity"])
-    worst = live.loc[live.shift_sd.idxmin()]
+    # Magnitude, not the most negative value: the two coincide only while every
+    # shift happens to be downward.
+    worst = live.loc[live.shift_sd.abs().idxmax()]
     down = int((live.shift_sd < 0).sum())
     rose = live[live.others_after > live.others_before]
     lifts = rose.tally.value_counts()
@@ -965,10 +997,11 @@ def collateral_section(stats: pd.DataFrame, rate: float) -> str:
         "baseline. Almost nothing crosses."
     )
     body.append(
-        f"\nThe shift is downward in {down} of {len(live)} conditions. That is the expected "
-        "direction: leaving a perturbed row in the player's history widens his own scale "
-        "estimate, and a wider spread deflates every other row's z, so contamination makes "
-        "the remaining matches look slightly LESS anomalous rather than more."
+        f"\nThe shift is downward in {down} of {len(live)} conditions -- consistent with "
+        "contamination widening the player's own scale estimate, since a wider spread "
+        "deflates every other row's z and makes the remaining matches look slightly LESS "
+        "anomalous. These transformations are nonlinear, so that is a reading of the "
+        "observed direction rather than a property guaranteed for every history."
     )
     if len(lifts):
         first = lifts.index[0]
@@ -1087,10 +1120,65 @@ def caption(scored: pd.DataFrame, census: pd.DataFrame, rates: tuple[float, ...]
     )
 
 
-def is_canonical(n: int | None, forest: bool, design: str, seed: int) -> bool:
-    """Whether a run is the published study's recipe. Anything narrower is a
-    diagnostic and must not overwrite publication-facing output."""
-    return n is None and forest and design == "heldout" and seed == injection_test.SEED
+#: THE publication recipe. The hook, the pixi task and the gate all read this,
+#: so the recipe cannot be written down twice and drift.
+PUBLICATION = {
+    "design": "heldout",
+    "headline": "correlated:3.0",
+    "out": "results/phase2.md",
+    "results": "phase2.parquet",
+    "census": "census.parquet",
+}
+
+#: The persistent runs that supply collateral, each with the recipe its payload
+#: must be stamped under. A swapped or stale arm is refused rather than read.
+COLLATERAL_ARMS: dict[str, dict] = {
+    "collateral.parquet": {"forest": False},
+    "collateral-forest.parquet": {
+        "forest": True,
+        "scorers": injection_test.FOREST_SCORERS,
+        "mechanisms": {},
+    },
+}
+
+
+def collateral_config(name: str, mart: pd.DataFrame) -> tuple[str, bool]:
+    """The stamp an arm's payload must carry, and whether it used forests."""
+    arm = COLLATERAL_ARMS[name]
+    forest = arm["forest"]
+    recipe = injection_test.canonical_recipe(
+        design="persistent",
+        compositions={"correlated": tuple(injection_test.COMPOSITION_ORDER)},
+        **{k: v for k, v in arm.items() if k != "forest"},
+        forest=forest,
+    )
+    return injection_test.campaign_config(
+        heldout.scoring_config(forest=forest), recipe, mart
+    ), forest
+
+
+def is_canonical(args: argparse.Namespace) -> bool:
+    """Whether THIS invocation is the publication recipe.
+
+    Compares the whole resolved recipe, not a few flags: ``--headline`` drives
+    the headline summary and both agreement matrices, and a missing or extra
+    collateral arm changes what the report claims to have measured.
+    """
+    arms = tuple(sorted(Path(c).name for c in (args.collateral or ())))
+    return (
+        args.n is None
+        and args.forest
+        and not args.stale_ok
+        and args.design == PUBLICATION["design"]
+        and args.seed == injection_test.SEED
+        and args.headline == PUBLICATION["headline"]
+        and arms == tuple(sorted(COLLATERAL_ARMS))
+    )
+
+
+def publication_paths() -> set[Path]:
+    """Paths a non-canonical run must never write."""
+    return {Path(PUBLICATION["out"]).resolve()}
 
 
 def _mark_stale(target: Path, state: str) -> int:
@@ -1149,6 +1237,13 @@ def main(argv: list[str] | None = None) -> int:
         help="parquet to cache the census in. With forests it dominates the "
         "runtime, and it is fingerprint-guarded, so re-rendering a table "
         "costs nothing rather than refitting every row.",
+    )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="run THE publication recipe: canonical census, results, collateral "
+        "arms, headline and output path. The pre-push hook and `pixi run "
+        "publish` both use this, so the recipe lives in one place.",
     )
     parser.add_argument(
         "--collateral",
@@ -1210,6 +1305,18 @@ def main(argv: list[str] | None = None) -> int:
         help="markdown file to write (default: <data dir>/reports/phase2.md)",
     )
     args = parser.parse_args(argv)
+    if args.publish:
+        # Fill EVERY recipe field, so --publish and the gate cannot disagree.
+        reports = paths.report_dir()
+        args.forest = True
+        args.n = None
+        args.design = PUBLICATION["design"]
+        args.seed = injection_test.SEED
+        args.headline = PUBLICATION["headline"]
+        args.out = PUBLICATION["out"]
+        args.census = str(reports / PUBLICATION["census"])
+        args.results = str(reports / PUBLICATION["results"])
+        args.collateral = [str(reports / name) for name in COLLATERAL_ARMS]
 
     published = Path(args.out) if args.out else paths.report_dir() / "phase2.md"
     if args.check or args.mark_stale:
@@ -1251,8 +1358,8 @@ def main(argv: list[str] | None = None) -> int:
         compositions={"correlated": tuple(injection_test.COMPOSITION_ORDER)},
     )
     run_settings = injection_test.campaign_config(settings, recipe, mart)
-    # Only the canonical recipe may touch the README; the rest self-label.
-    canonical = is_canonical(args.n, args.forest, args.design, args.seed)
+    # Only the canonical recipe may touch publication output; the rest self-label.
+    canonical = is_canonical(args)
     if cache is not None and cache.exists():
         if args.stale_ok:
             census = pd.read_parquet(cache).rename(columns=LEGACY_RENAMES)
@@ -1264,6 +1371,14 @@ def main(argv: list[str] | None = None) -> int:
             cache.parent.mkdir(parents=True, exist_ok=True)
             heldout.write_census(cache, census, scored, config=settings)
     path = Path(args.out) if args.out else paths.report_dir() / "phase2.md"
+    if not canonical and path.resolve() in publication_paths():
+        # A banner is not the same as leaving publication output untouched.
+        print(
+            f"error: refusing to write {path} from a non-canonical recipe. "
+            "Use --publish, or send this run to a diagnostic path with --out.",
+            file=sys.stderr,
+        )
+        return 2
     saved = Path(args.results) if args.results else path.with_suffix(".parquet")
     if saved.exists():
         # Rendering is a pure function of stored results, so a table change
@@ -1303,11 +1418,39 @@ def main(argv: list[str] | None = None) -> int:
         )
         saved.parent.mkdir(parents=True, exist_ok=True)
         heldout.write_stamped(saved, results, scored, extra=(injection_test,), config=run_settings)
-    collateral = None
+    collateral, collateral_stamps = None, {}
     if args.collateral:
-        frames = [pd.read_parquet(c) for c in args.collateral]
+        frames = []
+        for spec in args.collateral:
+            where = Path(spec)
+            arm = where.name
+            if arm not in COLLATERAL_ARMS:
+                print(
+                    f"error: {arm} is not a collateral arm; expected one of "
+                    f"{', '.join(sorted(COLLATERAL_ARMS))}",
+                    file=sys.stderr,
+                )
+                return 2
+            config, _ = collateral_config(arm, mart)
+            if args.stale_ok:
+                frames.append(pd.read_parquet(where))
+                continue
+            # Stamped like any other payload: a swapped, stale or wrong-recipe
+            # arm must be refused, not concatenated and published.
+            frames.append(
+                heldout.read_stamped(
+                    where,
+                    scored,
+                    what=f"collateral {arm}",
+                    extra=(injection_test,),
+                    config=config,
+                )
+            )
+            collateral_stamps[arm] = heldout.fingerprint(
+                scored, extra=(injection_test,), config=config
+            )
         collateral = pd.concat(frames, ignore_index=True)
-        print(f"collateral from {len(frames)} run(s): {len(collateral):,} rows")
+        print(f"collateral from {len(frames)} stamped run(s): {len(collateral):,} rows")
     path.parent.mkdir(parents=True, exist_ok=True)
     rendered = build(
         scored,
@@ -1318,6 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
         stale=args.stale_ok,
         results_stamp=heldout.fingerprint(scored, extra=(injection_test,), config=run_settings),
         collateral=collateral,
+        collateral_stamps=collateral_stamps,
     )
     banner = STALE_BANNER if args.stale_ok else None
     if not canonical:

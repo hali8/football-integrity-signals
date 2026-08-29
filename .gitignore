@@ -255,7 +255,7 @@ DATASET-ISSUE.md
 pass_twins.sql
 
 # Downloaded and derived data; nothing under it belongs in the repository.
-data/
+/data/
 .DS_Store
 codex_claude_handoff.md
 SESSION-STATE.md
