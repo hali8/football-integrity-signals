@@ -1151,6 +1151,7 @@ PUBLICATION = {
     "headline": "correlated:3.0",
     "stale_ok": False,
     "out": "results/phase2.md",
+    "readme": "README.md",
     "results": "phase2.parquet",
     "census": "census.parquet",
 }
@@ -1214,8 +1215,10 @@ def is_canonical(args: argparse.Namespace) -> bool:
 
 
 def publication_paths() -> set[Path]:
-    """Paths a non-canonical run must never write."""
-    return {Path(PUBLICATION["out"]).resolve()}
+    """Every path a non-canonical run must never write. The README is
+    publication output too -- leaving its path in code rather than in the
+    specification is how it stayed outside the gate."""
+    return {Path(PUBLICATION["out"]).resolve(), Path(PUBLICATION["readme"]).resolve()}
 
 
 def _mark_stale(target: Path, state: str) -> int:
@@ -1235,7 +1238,7 @@ def _mark_stale(target: Path, state: str) -> int:
             head + "# Injection sensitivity\n\n" + STALE_BANNER + rest, encoding="utf-8"
         )
         print(f"banded {target}")
-    readme = Path("README.md")
+    readme = Path(PUBLICATION["readme"])
     if readme.exists():
         rt = readme.read_text(encoding="utf-8")
         marker = "## Output / analysis summary"
@@ -1507,13 +1510,13 @@ def main(argv: list[str] | None = None) -> int:
     path.write_text(rendered, encoding="utf-8")
     # A fresh render answers the banner, so it clears it. Gated: only the
     # canonical recipe rewrites the block a reader will cite.
-    readme = Path("README.md")
+    readme = Path(PUBLICATION["readme"])
     if canonical and not args.stale_ok and readme.exists():
         before = readme.read_text(encoding="utf-8")
         after = _put_summary(_clear_banner(before), scored, rendered)
         if after != before:
             readme.write_text(after, encoding="utf-8")
-            print("updated README.md: summary regenerated, stale banner cleared")
+            print(f"updated {readme}: summary regenerated, stale banner cleared")
     elif not canonical:
         print("non-canonical recipe: output labelled diagnostic, README untouched")
     print(f"wrote {path}\nresults at {saved}  (re-render from this; no rerun needed)")

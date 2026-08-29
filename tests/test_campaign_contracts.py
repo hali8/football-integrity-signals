@@ -726,3 +726,42 @@ def test_the_hook_re_renders_through_the_publication_recipe():
     assert '"--publish"' in source, "the hook must use the one recipe"
     assert '"--census"' not in source, "spelling the recipe out again is how it drifted"
     assert "85 min" not in source, "the withdrawn timing must not be quoted"
+
+
+@pytest.mark.slow
+def test_publishing_reads_the_stamped_payloads_and_never_re_runs(monkeypatch, tmp_path):
+    """The re-render must consume the cached census, results and BOTH collateral
+    arms rather than starting a campaign -- the defect that made the pre-push
+    hook able to launch one. Needs the warehouse, so it is marked slow.
+    """
+    for name in ("phase2.parquet", "census.parquet", *report.COLLATERAL_ARMS):
+        if not (Path("data/reports") / name).exists():
+            pytest.skip(f"{name} absent; run the campaign first")
+
+    def never(*a, **k):
+        raise AssertionError("a re-render entered the analysis")
+
+    monkeypatch.setattr(report.injection_test, "run", never)
+    monkeypatch.setattr(report.heldout, "score_all", never)
+
+    read: list[str] = []
+    real_stamped = report.heldout.read_stamped
+
+    def note(path, *a, **k):
+        read.append(Path(path).name)
+        return real_stamped(path, *a, **k)
+
+    monkeypatch.setattr(report.heldout, "read_stamped", note)
+    # Redirect publication output; PUBLICATION is the single source, so moving
+    # "out" moves the gate's protected path with it.
+    monkeypatch.setitem(report.PUBLICATION, "out", str(tmp_path / "phase2.md"))
+    monkeypatch.setitem(report.PUBLICATION, "readme", str(tmp_path / "README.md"))
+    monkeypatch.setattr(report, "build", lambda *a, **k: "# stub\n")
+    tracked = Path("README.md").read_bytes()
+
+    assert report.main(["--publish", "--jobs", "1"]) == 0
+    assert (tmp_path / "phase2.md").exists()
+    assert Path("README.md").read_bytes() == tracked, "the real README must not be touched"
+    assert set(read) == {"census.parquet", "phase2.parquet", *report.COLLATERAL_ARMS}, (
+        f"expected the census, the stamped results and both arms, read {read}"
+    )
