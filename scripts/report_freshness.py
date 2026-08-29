@@ -45,11 +45,13 @@ def main() -> int:
         return 0
     _reexec_in_project_env()
     from fis import paths
-    from fis.analysis.report import STALE_MARKER, freshness
+    from fis.analysis.report import COLLATERAL_ARMS, STALE_MARKER, freshness
 
     text = REPORT.read_text(encoding="utf-8")
     # Only where the warehouse exists: CI cannot tell deleted from never-fetched.
-    state, detail = freshness(text, results=paths.report_dir() / "phase2.parquet")
+    state, detail = freshness(
+        text, results=paths.report_dir() / "phase2.parquet", arms=set(COLLATERAL_ARMS)
+    )
     if state == "fresh":
         return 0
 

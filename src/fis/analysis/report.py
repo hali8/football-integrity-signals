@@ -133,7 +133,9 @@ def _stamps(
     return stamps
 
 
-def freshness(text: str, results: Path | None = None) -> tuple[str, str]:
+def freshness(
+    text: str, results: Path | None = None, arms: set[str] | None = None
+) -> tuple[str, str]:
     """Classify a rendered report against the code and payload as they stand.
 
     Returns (state, detail): fresh | render | analysis | runtime | payload |
@@ -188,6 +190,25 @@ def freshness(text: str, results: Path | None = None) -> tuple[str, str]:
                 "from -- re-render from the right payload or re-run"
             )
     declared = found.get(COLLATERAL_STAMP)
+    if arms is not None:
+        # The PUBLISHED report must declare exactly the canonical arms. Trusting
+        # its own declaration of completeness is how a damaged or hand-edited
+        # artefact reads as fresh while missing half its collateral.
+        named = [e.partition(":")[0] for e in declared.split(",")] if declared else []
+        if sorted(named) != sorted(arms):
+            missing = sorted(set(arms) - set(named))
+            extra = sorted(set(named) - set(arms))
+            trouble = (
+                f"missing {', '.join(missing)}"
+                if missing
+                else f"unexpected {', '.join(extra)}"
+                if extra
+                else "duplicate arms"
+            )
+            return "payload", (
+                f"the report declares the wrong collateral arms ({trouble}) -- "
+                "the published report must carry every canonical arm"
+            )
     if declared and results is not None and results.parent.exists():
         import pyarrow.parquet as pq
 
@@ -1123,12 +1144,21 @@ def caption(scored: pd.DataFrame, census: pd.DataFrame, rates: tuple[float, ...]
 #: THE publication recipe. The hook, the pixi task and the gate all read this,
 #: so the recipe cannot be written down twice and drift.
 PUBLICATION = {
+    "n": None,
+    "forest": True,
     "design": "heldout",
+    "seed": injection_test.SEED,
     "headline": "correlated:3.0",
+    "stale_ok": False,
     "out": "results/phase2.md",
     "results": "phase2.parquet",
     "census": "census.parquet",
 }
+
+#: The recipe fields compared field-for-field. apply_publication() writes these
+#: and is_canonical() reads them, both from PUBLICATION, so one cannot be
+#: updated without the other.
+PUBLICATION_FIELDS = ("n", "forest", "design", "seed", "headline", "stale_ok")
 
 #: The persistent runs that supply collateral, each with the recipe its payload
 #: must be stamped under. A swapped or stale arm is refused rather than read.
@@ -1157,23 +1187,30 @@ def collateral_config(name: str, mart: pd.DataFrame) -> tuple[str, bool]:
     ), forest
 
 
-def is_canonical(args: argparse.Namespace) -> bool:
-    """Whether THIS invocation is the publication recipe.
+def apply_publication(args: argparse.Namespace, reports: Path) -> None:
+    """Fill ``args`` from THE publication specification."""
+    for field in PUBLICATION_FIELDS:
+        setattr(args, field, PUBLICATION[field])
+    args.out = PUBLICATION["out"]
+    args.census = str(reports / PUBLICATION["census"])
+    args.results = str(reports / PUBLICATION["results"])
+    args.collateral = [str(reports / name) for name in COLLATERAL_ARMS]
 
-    Compares the whole resolved recipe, not a few flags: ``--headline`` drives
-    the headline summary and both agreement matrices, and a missing or extra
-    collateral arm changes what the report claims to have measured.
+
+def is_canonical(args: argparse.Namespace) -> bool:
+    """Whether this invocation may take publication side effects.
+
+    Two conditions, deliberately separate: the recipe must EQUAL the
+    specification, and publication must have been asked for explicitly. A
+    diagnostic render that happens to carry canonical-looking fields is content
+    that matches, not an instruction to publish.
     """
+    if not getattr(args, "publish", False):
+        return False
+    if any(getattr(args, field, None) != PUBLICATION[field] for field in PUBLICATION_FIELDS):
+        return False
     arms = tuple(sorted(Path(c).name for c in (args.collateral or ())))
-    return (
-        args.n is None
-        and args.forest
-        and not args.stale_ok
-        and args.design == PUBLICATION["design"]
-        and args.seed == injection_test.SEED
-        and args.headline == PUBLICATION["headline"]
-        and arms == tuple(sorted(COLLATERAL_ARMS))
-    )
+    return arms == tuple(sorted(COLLATERAL_ARMS))
 
 
 def publication_paths() -> set[Path]:
@@ -1306,17 +1343,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.publish:
-        # Fill EVERY recipe field, so --publish and the gate cannot disagree.
-        reports = paths.report_dir()
-        args.forest = True
-        args.n = None
-        args.design = PUBLICATION["design"]
-        args.seed = injection_test.SEED
-        args.headline = PUBLICATION["headline"]
-        args.out = PUBLICATION["out"]
-        args.census = str(reports / PUBLICATION["census"])
-        args.results = str(reports / PUBLICATION["results"])
-        args.collateral = [str(reports / name) for name in COLLATERAL_ARMS]
+        apply_publication(args, paths.report_dir())
 
     published = Path(args.out) if args.out else paths.report_dir() / "phase2.md"
     if args.check or args.mark_stale:
@@ -1330,13 +1357,27 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         # The payload sits beside the working render; results/ is markdown only.
         payload = Path(args.results) if args.results else published.with_suffix(".parquet")
-        state, detail = freshness(target.read_text(encoding="utf-8"), results=payload)
+        state, detail = freshness(
+            target.read_text(encoding="utf-8"), results=payload, arms=set(COLLATERAL_ARMS)
+        )
         if args.mark_stale:
             return _mark_stale(target, state)
         print(f"{target}: {state} -- {detail}")
         return {"fresh": 0, "render": 1, "analysis": 2, "runtime": 2, "payload": 2, "unknown": 2}[
             state
         ]
+
+    # Decided from the arguments alone, so an invalid publication attempt cannot
+    # load and residualise the warehouse before being refused.
+    canonical = is_canonical(args)
+    path = Path(args.out) if args.out else paths.report_dir() / "phase2.md"
+    if not canonical and path.resolve() in publication_paths():
+        print(
+            f"error: refusing to write {path} from a non-canonical recipe. "
+            "Use --publish, or send this run to a diagnostic path with --out.",
+            file=sys.stderr,
+        )
+        return 2
 
     name, _, dose = args.headline.partition(":")
     mart = baseline.load()
@@ -1358,8 +1399,6 @@ def main(argv: list[str] | None = None) -> int:
         compositions={"correlated": tuple(injection_test.COMPOSITION_ORDER)},
     )
     run_settings = injection_test.campaign_config(settings, recipe, mart)
-    # Only the canonical recipe may touch publication output; the rest self-label.
-    canonical = is_canonical(args)
     if cache is not None and cache.exists():
         if args.stale_ok:
             census = pd.read_parquet(cache).rename(columns=LEGACY_RENAMES)
@@ -1370,15 +1409,6 @@ def main(argv: list[str] | None = None) -> int:
         if cache is not None:
             cache.parent.mkdir(parents=True, exist_ok=True)
             heldout.write_census(cache, census, scored, config=settings)
-    path = Path(args.out) if args.out else paths.report_dir() / "phase2.md"
-    if not canonical and path.resolve() in publication_paths():
-        # A banner is not the same as leaving publication output untouched.
-        print(
-            f"error: refusing to write {path} from a non-canonical recipe. "
-            "Use --publish, or send this run to a diagnostic path with --out.",
-            file=sys.stderr,
-        )
-        return 2
     saved = Path(args.results) if args.results else path.with_suffix(".parquet")
     if saved.exists():
         # Rendering is a pure function of stored results, so a table change

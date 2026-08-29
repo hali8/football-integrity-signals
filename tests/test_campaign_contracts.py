@@ -566,6 +566,7 @@ def test_a_valueless_fis_marker_does_not_break_freshness():
 
 def _args(**over):
     base = {
+        "publish": True,
         "n": None,
         "forest": True,
         "design": "heldout",
@@ -597,14 +598,81 @@ def test_the_publication_recipe_is_canonical():
         ("one arm only", {"collateral": ["data/reports/collateral.parquet"]}),
         ("duplicate arm", {"collateral": ["data/reports/collateral.parquet"] * 2}),
         ("foreign arm", {"collateral": ["data/reports/something-else.parquet"]}),
+        ("no --publish", {"publish": False}),
     ],
 )
 def test_anything_but_the_recipe_is_not_canonical(what, over):
     assert not report.is_canonical(_args(**over)), f"{what} must not be canonical"
 
 
-def test_a_noncanonical_run_refuses_the_publication_path():
-    assert Path(report.PUBLICATION["out"]).resolve() in report.publication_paths()
+def test_a_noncanonical_run_refuses_before_touching_the_warehouse(monkeypatch, tmp_path):
+    """Behavioural, not classification: main() must return 2, leave the tracked
+    report byte-identical, and never reach the mart -- the refusal was 35 lines
+    after baseline.load(), so an invalid attempt residualised everything first."""
+    tracked = Path(report.PUBLICATION["out"])
+    before = tracked.read_bytes() if tracked.exists() else None
+
+    def never(*a, **k):
+        raise AssertionError("expensive work entered before the publication gate")
+
+    monkeypatch.setattr(report.baseline, "load", never)
+    monkeypatch.setattr(report.heldout, "score_all", never)
+    monkeypatch.setattr(report.injection_test, "run", never)
+
+    assert report.main(["--n", "25", "--out", str(tracked)]) == 2
+    if before is not None:
+        assert tracked.read_bytes() == before, "the tracked report was modified"
+
+
+def test_canonical_looking_arguments_without_publish_cannot_publish(monkeypatch):
+    """Recipe equality is content; --publish is authorisation. A diagnostic run
+    that happens to match must not take publication side effects."""
+    reports = Path("data/reports")
+    args = _args(collateral=[str(reports / a) for a in report.COLLATERAL_ARMS], publish=False)
+    assert not report.is_canonical(args)
+    args.publish = True
+    assert report.is_canonical(args), "the same recipe WITH --publish is canonical"
+
+
+def test_apply_publication_produces_a_canonical_namespace(tmp_path):
+    """The two helpers read one specification, so applying it must satisfy the
+    comparison -- otherwise the spec has drifted from the gate again."""
+    args = argparse.Namespace(publish=True)
+    report.apply_publication(args, tmp_path)
+    assert report.is_canonical(args)
+    for field in report.PUBLICATION_FIELDS:
+        assert getattr(args, field) == report.PUBLICATION[field]
+
+
+def test_the_hook_invokes_exactly_the_publication_recipe(monkeypatch, tmp_path):
+    """Behavioural: intercept the subprocess boundary and read the real argv,
+    rather than grepping the script for a flag."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("report_freshness", "scripts/report_freshness.py")
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+
+    seen = {}
+
+    class Done:
+        returncode = 0
+
+    def record(argv, **kw):
+        seen["argv"] = argv
+        return Done()
+
+    monkeypatch.setattr(hook, "REPORT", tmp_path / "phase2.md")
+    (tmp_path / "phase2.md").write_text("stub")
+    monkeypatch.setattr(hook, "_reexec_in_project_env", lambda: None)
+    monkeypatch.setattr(hook.subprocess, "run", record)
+    monkeypatch.setattr(
+        "fis.analysis.report.freshness", lambda *a, **k: ("render", "only the renderer changed")
+    )
+    hook.main()
+    assert seen["argv"][1:] == ["-m", "fis.analysis.report", "--publish"], (
+        f"the hook must run the publication recipe, got {seen['argv'][1:]}"
+    )
 
 
 # ------------------------------------------------- collateral provenance (B2) --
