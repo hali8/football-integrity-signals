@@ -1,10 +1,10 @@
 <!-- fis-analysis=ede099295479b3fb -->
-<!-- fis-render=7bae4ceb8c598553 -->
+<!-- fis-render=9630bb563599a259 -->
 <!-- fis-runtime=python=3.12.13,numpy=2.5.2,pandas=3.0.5,scipy=1.18.0,scikit-learn=1.9.0,joblib=1.5.3,pyarrow=25.0.0,matplotlib=3.11.1 -->
 <!-- fis-results=v1.16b25f07a0583641.ede099295479b3fb.869ccb52 -->
 # Injection sensitivity
 
-`fis-report`, 2026-08-28. 43,993 player-matches / 2,140 players; severity ladder k = (0.0, 1.0, 1.5, 3.0); bars at 1% and 5%; agreement matrices on `correlated:3`.
+`fis-report`, 2026-08-29. 43,993 player-matches / 2,140 players; severity ladder k = (0.0, 1.0, 1.5, 3.0); bars at 1% and 5%; agreement matrices on `correlated:3`.
 
 ## Headline
 
@@ -19,6 +19,8 @@
 | forest_res | 0/2,140 (0.0%, auc 0.885) | 479/2,140 (22.4%, auc 0.911) |
 
 The forests are weakest against a single metric and strongest against the coordinated one. On the coordinated injection the forest recovers **2.2× max|z|**. That is a statement about the bar, not about ranking: `mahalanobis` ranks perturbed rows above clean ones more reliably (auc 0.913 against `forest_res`'s 0.911), while `forest_res` moves fewer rows further past the cut.
+
+<!-- fis-headline:end -->
 
 **What the scorers see.** Six per-match metrics — `pass_completion_pct`, `defensive_action_success_pct`, `mean_action_x`, `passes_per_90`, `defensive_actions_per_90`, `touches_in_defensive_third_per_90` — or their leave-one-out per-player residuals: max|z| and the `_res` scorers read the residual z's, `mahalanobis` and `forest` the metric vector directly.
 

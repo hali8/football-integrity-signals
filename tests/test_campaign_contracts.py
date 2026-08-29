@@ -556,3 +556,11 @@ def test_the_direction_claim_counts_cells_rather_than_naming_scorers():
 def test_an_empty_collateral_frame_says_so_rather_than_rendering_a_table():
     stats = pd.DataFrame([_collateral_stats(collateral_measurable=False)])
     assert "No collateral measured" in report.collateral_section(stats, 0.01)
+
+
+def test_a_valueless_fis_marker_does_not_break_freshness():
+    """HEADLINE_END shares the fis- prefix but carries no "=", and the stamp
+    parser unpacked every such line into a pair."""
+    text = _report_text() + f"\n{report.HEADLINE_END}\n\nprose\n"
+    state, _ = report.freshness(text)
+    assert state in {"fresh", "render", "analysis", "runtime", "payload"}

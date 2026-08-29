@@ -80,6 +80,9 @@ STALE_MARKER = "These numbers are stale"
 #: being hand-copied -- which is how a wrong figure got published once.
 SUMMARY_OPEN = "<!-- fis-summary:start -->"
 SUMMARY_CLOSE = "<!-- fis-summary:end -->"
+#: Ends the block the README lifts. Everything after it -- what the scorers see,
+#: the injection map, calibration -- belongs to the report alone.
+HEADLINE_END = "<!-- fis-headline:end -->"
 # Worded to the antecedent: a source hash knows the code changed, not that a
 # number moved.
 STALE_BANNER = (
@@ -136,7 +139,8 @@ def freshness(text: str, results: Path | None = None) -> tuple[str, str]:
         for k, v in (
             line.removeprefix("<!-- ").removesuffix(" -->").split("=", 1)
             for line in text.splitlines()
-            if line.startswith("<!-- fis-")
+            # "=" required: markers share the fis- prefix but carry no value.
+            if line.startswith("<!-- fis-") and "=" in line
         )
     }
     if not found:
@@ -201,7 +205,9 @@ def _put_summary(text: str, scored: pd.DataFrame, rendered: str) -> str:
     """
     if SUMMARY_OPEN not in text or SUMMARY_CLOSE not in text:
         return text
-    body = rendered.partition("## Headline\n")[2].split("\n<details>", 1)[0].strip()
+    body = rendered.partition("## Headline\n")[2]
+    # The marker is the boundary; the fold is the fallback for older renders.
+    body = body.split(HEADLINE_END, 1)[0].split("\n<details>", 1)[0].strip()
     block = (
         f"{SUMMARY_OPEN}\n\n"
         f"One full-population run: {len(scored):,} player-matches, "
@@ -892,6 +898,7 @@ def build(
         "# Injection sensitivity\n",
         _context(scored, rates, headline),
         headline_summary(per_rate[min(rates)], min(rates), headline),
+        f"\n{HEADLINE_END}",
         "",
         experiment_note(),
         "",

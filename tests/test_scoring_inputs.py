@@ -249,7 +249,9 @@ def test_the_readme_summary_is_written_from_the_render():
     rendered = (
         "# Injection sensitivity\n\n## Headline\n\n"
         "| | single | coordinated |\n|---|---:|---:|\n| forest | 1/2 (50.0%) | 3/4 (75.0%) |\n\n"
-        "The forests win on the coordinated one.\n\nCalibration: every bar flags 1.00%.\n"
+        "The forests win on the coordinated one.\n\n"
+        f"{report.HEADLINE_END}\n\nWhat the scorers see: report-only prose.\n"
+        "\nCalibration: every bar flags 1.00%.\n"
         "\n<details>\n<summary><b>DIRECT</b></summary>\n\ndetection grids\n\n</details>\n"
     )
     scored = _scored()
@@ -257,7 +259,8 @@ def test_the_readme_summary_is_written_from_the_render():
     assert "stale hand-typed numbers" not in out
     assert "| forest | 1/2 (50.0%) | 3/4 (75.0%) |" in out
     assert "The forests win on the coordinated one." in out
-    assert "Calibration: every bar flags 1.00%." in out, "the calibration line travels with it"
+    assert "Calibration" not in out, "calibration belongs to the report alone"
+    assert "report-only prose" not in out, "the experiment note stays in the report"
     assert "detection grids" not in out, "the folds are the report's, not the README's"
     assert f"{len(scored):,} player-matches" in out
     assert out.startswith("Author's prose above.") and out.rstrip().endswith(
