@@ -1,5 +1,5 @@
 <!-- fis-analysis=ede099295479b3fb -->
-<!-- fis-render=9630bb563599a259 -->
+<!-- fis-render=2727c6ba4631750d -->
 <!-- fis-runtime=python=3.12.13,numpy=2.5.2,pandas=3.0.5,scipy=1.18.0,scikit-learn=1.9.0,joblib=1.5.3,pyarrow=25.0.0,matplotlib=3.11.1 -->
 <!-- fis-results=v1.16b25f07a0583641.ede099295479b3fb.869ccb52 -->
 # Injection sensitivity
@@ -320,65 +320,35 @@ max|z| is the simplest scorer, carried in both tables as the baseline the others
 
 Independent of bar and dose. A gap in coverage is reported under the grid.
 
-![target agreement](plots/target_agreement.svg)
+### all positions (n=2,140)
+
+![same target match chosen (n=2,140)](plots/target_agreement.svg)
 
 <details>
 <summary>position GK (n=147)</summary>
 
-| | max | mahalanobis | mahalanobis_res | forest | forest_norm | forest_res | forest_res_norm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **max** | 100% (147) | 8% (147) | 7% (147) | 8% (147) | 7% (147) | 4% (147) | 10% (147) |
-| **mahalanobis** | 8% (147) | 100% (147) | 19% (147) | 10% (147) | 6% (147) | 11% (147) | 10% (147) |
-| **mahalanobis_res** | 7% (147) | 19% (147) | 100% (147) | 9% (147) | 6% (147) | 9% (147) | 14% (147) |
-| **forest** | 8% (147) | 10% (147) | 9% (147) | 100% (147) | 57% (147) | 12% (147) | 7% (147) |
-| **forest_norm** | 7% (147) | 6% (147) | 6% (147) | 57% (147) | 100% (147) | 13% (147) | 11% (147) |
-| **forest_res** | 4% (147) | 11% (147) | 9% (147) | 12% (147) | 13% (147) | 100% (147) | 32% (147) |
-| **forest_res_norm** | 10% (147) | 10% (147) | 14% (147) | 7% (147) | 11% (147) | 32% (147) | 100% (147) |
+![same target match chosen (n=147)](plots/target_agreement_GK.svg)
 
 </details>
 
 <details>
 <summary>position DF (n=754)</summary>
 
-| | max | mahalanobis | mahalanobis_res | forest | forest_norm | forest_res | forest_res_norm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **max** | 100% (754) | 9% (754) | 12% (754) | 9% (754) | 10% (754) | 11% (754) | 11% (754) |
-| **mahalanobis** | 9% (754) | 100% (754) | 19% (754) | 9% (754) | 9% (754) | 11% (754) | 11% (754) |
-| **mahalanobis_res** | 12% (754) | 19% (754) | 100% (754) | 9% (754) | 8% (754) | 13% (754) | 12% (754) |
-| **forest** | 9% (754) | 9% (754) | 9% (754) | 100% (754) | 70% (754) | 11% (754) | 11% (754) |
-| **forest_norm** | 10% (754) | 9% (754) | 8% (754) | 70% (754) | 100% (754) | 10% (754) | 10% (754) |
-| **forest_res** | 11% (754) | 11% (754) | 13% (754) | 11% (754) | 10% (754) | 100% (754) | 71% (754) |
-| **forest_res_norm** | 11% (754) | 11% (754) | 12% (754) | 11% (754) | 10% (754) | 71% (754) | 100% (754) |
+![same target match chosen (n=754)](plots/target_agreement_DF.svg)
 
 </details>
 
 <details>
 <summary>position MD (n=784)</summary>
 
-| | max | mahalanobis | mahalanobis_res | forest | forest_norm | forest_res | forest_res_norm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **max** | 100% (784) | 11% (784) | 13% (784) | 9% (784) | 9% (784) | 12% (784) | 12% (784) |
-| **mahalanobis** | 11% (784) | 100% (784) | 19% (784) | 11% (784) | 10% (784) | 12% (784) | 12% (784) |
-| **mahalanobis_res** | 13% (784) | 19% (784) | 100% (784) | 10% (784) | 9% (784) | 15% (784) | 14% (784) |
-| **forest** | 9% (784) | 11% (784) | 10% (784) | 100% (784) | 71% (784) | 15% (784) | 13% (784) |
-| **forest_norm** | 9% (784) | 10% (784) | 9% (784) | 71% (784) | 100% (784) | 14% (784) | 14% (784) |
-| **forest_res** | 12% (784) | 12% (784) | 15% (784) | 15% (784) | 14% (784) | 100% (784) | 71% (784) |
-| **forest_res_norm** | 12% (784) | 12% (784) | 14% (784) | 13% (784) | 14% (784) | 71% (784) | 100% (784) |
+![same target match chosen (n=784)](plots/target_agreement_MD.svg)
 
 </details>
 
 <details>
 <summary>position FW (n=455)</summary>
 
-| | max | mahalanobis | mahalanobis_res | forest | forest_norm | forest_res | forest_res_norm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **max** | 100% (455) | 14% (455) | 12% (455) | 12% (455) | 13% (455) | 12% (455) | 11% (455) |
-| **mahalanobis** | 14% (455) | 100% (455) | 18% (455) | 13% (455) | 12% (455) | 12% (455) | 12% (455) |
-| **mahalanobis_res** | 12% (455) | 18% (455) | 100% (455) | 13% (455) | 11% (455) | 11% (455) | 11% (455) |
-| **forest** | 12% (455) | 13% (455) | 13% (455) | 100% (455) | 65% (455) | 10% (455) | 11% (455) |
-| **forest_norm** | 13% (455) | 12% (455) | 11% (455) | 65% (455) | 100% (455) | 11% (455) | 13% (455) |
-| **forest_res** | 12% (455) | 12% (455) | 11% (455) | 10% (455) | 11% (455) | 100% (455) | 58% (455) |
-| **forest_res_norm** | 11% (455) | 12% (455) | 11% (455) | 11% (455) | 13% (455) | 58% (455) | 100% (455) |
+![same target match chosen (n=455)](plots/target_agreement_FW.svg)
 
 </details>
 
@@ -387,24 +357,18 @@ Independent of bar and dose. A gap in coverage is reported under the grid.
 <details>
 <summary><b>Detection agreement (correlated, k=3, bar 1%)</b></summary>
 
-Cell = `|A∩B|/|A|` / Jaccard. Row A, column B: of the players A caught, the share B also caught. Asymmetric on purpose.
+Cell = `|A∩B|/|A|` / Jaccard in the tables; the heatmaps show the row-normalised share alone. Row A, column B: of the players A caught, the share B also caught. Asymmetric on purpose.
 
-![detection agreement](plots/detection_agreement.svg)
+### all positions (n=2,140)
+
+![of A's catches, % (n=2,140)](plots/detection_agreement.svg)
 
 caught: max 219, mahalanobis 252, forest 477, forest_norm 393, mahalanobis_res 315, forest_res 479, forest_res_norm 336
 
 <details>
 <summary>position GK (n=147)</summary>
 
-| | max | mahalanobis | forest | forest_norm | mahalanobis_res | forest_res | forest_res_norm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **max** | 100%/100% | 92%/80% | 71%/64% | 48%/43% | 90%/80% | 65%/60% | 44%/42% |
-| **mahalanobis** | 86%/80% | 100%/100% | 68%/62% | 52%/49% | 88%/82% | 64%/60% | 45%/44% |
-| **forest** | 86%/64% | 88%/62% | 100%/100% | 67%/62% | 88%/65% | 64%/51% | 41%/34% |
-| **forest_norm** | 80%/43% | 91%/49% | 91%/62% | 100%/100% | 91%/51% | 65%/42% | 55%/43% |
-| **mahalanobis_res** | 88%/80% | 92%/82% | 71%/65% | 54%/51% | 100%/100% | 62%/56% | 45%/44% |
-| **forest_res** | 89%/60% | 92%/60% | 71%/51% | 54%/42% | 86%/56% | 100%/100% | 57%/51% |
-| **forest_res_norm** | 89%/42% | 95%/44% | 68%/34% | 66%/43% | 92%/44% | 84%/51% | 100%/100% |
+![of A's catches, % (n=147)](plots/detection_agreement_GK.svg)
 
 caught: max 124, mahalanobis 132, forest 102, forest_norm 75, mahalanobis_res 126, forest_res 91, forest_res_norm 62
 
@@ -413,15 +377,7 @@ caught: max 124, mahalanobis 132, forest 102, forest_norm 75, mahalanobis_res 12
 <details>
 <summary>position DF (n=754)</summary>
 
-| | max | mahalanobis | forest | forest_norm | mahalanobis_res | forest_res | forest_res_norm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **max** | 100%/100% | 23%/9% | 35%/5% | 29%/5% | 39%/13% | 39%/6% | 32%/7% |
-| **mahalanobis** | 13%/9% | 100%/100% | 40%/9% | 26%/7% | 30%/14% | 40%/10% | 45%/15% |
-| **forest** | 6%/5% | 11%/9% | 100%/100% | 63%/53% | 13%/10% | 35%/22% | 27%/19% |
-| **forest_norm** | 6%/5% | 9%/7% | 76%/53% | 100%/100% | 13%/10% | 29%/16% | 24%/15% |
-| **mahalanobis_res** | 16%/13% | 21%/14% | 33%/10% | 28%/10% | 100%/100% | 35%/12% | 31%/12% |
-| **forest_res** | 7%/6% | 12%/10% | 38%/22% | 26%/16% | 15%/12% | 100%/100% | 56%/47% |
-| **forest_res_norm** | 8%/7% | 18%/15% | 39%/19% | 29%/15% | 17%/12% | 74%/47% | 100%/100% |
+![of A's catches, % (n=754)](plots/detection_agreement_DF.svg)
 
 caught: max 31, mahalanobis 53, forest 191, forest_norm 160, mahalanobis_res 75, forest_res 175, forest_res_norm 132
 
@@ -430,15 +386,7 @@ caught: max 31, mahalanobis 53, forest 191, forest_norm 160, mahalanobis_res 75,
 <details>
 <summary>position MD (n=784)</summary>
 
-| | max | mahalanobis | forest | forest_norm | mahalanobis_res | forest_res | forest_res_norm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **max** | 100%/100% | 20%/8% | 24%/4% | 24%/4% | 32%/9% | 28%/4% | 20%/4% |
-| **mahalanobis** | 11%/8% | 100%/100% | 36%/9% | 22%/7% | 40%/18% | 27%/6% | 20%/6% |
-| **forest** | 4%/4% | 11%/9% | 100%/100% | 57%/47% | 16%/12% | 32%/18% | 21%/14% |
-| **forest_norm** | 5%/4% | 9%/7% | 73%/47% | 100%/100% | 15%/10% | 29%/14% | 23%/14% |
-| **mahalanobis_res** | 11%/9% | 24%/18% | 31%/12% | 23%/10% | 100%/100% | 22%/7% | 18%/8% |
-| **forest_res** | 4%/4% | 7%/6% | 29%/18% | 20%/14% | 10%/7% | 100%/100% | 53%/46% |
-| **forest_res_norm** | 5%/4% | 8%/6% | 28%/14% | 24%/14% | 12%/8% | 77%/46% | 100%/100% |
+![of A's catches, % (n=784)](plots/detection_agreement_MD.svg)
 
 caught: max 25, mahalanobis 45, forest 147, forest_norm 115, mahalanobis_res 74, forest_res 161, forest_res_norm 111
 
@@ -447,15 +395,7 @@ caught: max 25, mahalanobis 45, forest 147, forest_norm 115, mahalanobis_res 74,
 <details>
 <summary>position FW (n=455)</summary>
 
-| | max | mahalanobis | forest | forest_norm | mahalanobis_res | forest_res | forest_res_norm |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **max** | 100%/100% | 13%/9% | 8%/4% | 5%/2% | 23%/13% | 18%/8% | 8%/4% |
-| **mahalanobis** | 23%/9% | 100%/100% | 9%/4% | 5%/2% | 14%/5% | 14%/4% | 9%/4% |
-| **forest** | 8%/4% | 5%/4% | 100%/100% | 57%/36% | 8%/4% | 19%/9% | 8%/5% |
-| **forest_norm** | 5%/2% | 2%/2% | 49%/36% | 100%/100% | 7%/4% | 26%/13% | 16%/10% |
-| **mahalanobis_res** | 22%/13% | 8%/5% | 8%/4% | 8%/4% | 100%/100% | 18%/8% | 10%/6% |
-| **forest_res** | 13%/8% | 6%/4% | 13%/9% | 21%/13% | 13%/8% | 100%/100% | 46%/41% |
-| **forest_res_norm** | 10%/4% | 6%/4% | 10%/5% | 23%/10% | 13%/6% | 77%/41% | 100%/100% |
+![of A's catches, % (n=455)](plots/detection_agreement_FW.svg)
 
 caught: max 39, mahalanobis 22, forest 37, forest_norm 43, mahalanobis_res 40, forest_res 52, forest_res_norm 31
 

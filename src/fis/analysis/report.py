@@ -669,6 +669,29 @@ def _matrix(labels: list[str], cell) -> str:
     return "\n".join(rows)
 
 
+def _grid(labels: list[str], share, title: str, plot: Path | None) -> str:
+    """A matrix as a heatmap when a path is given, else nothing.
+
+    ``share(a, b)`` returns (percentage, n); NaN renders as an empty cell. The
+    caller falls back to :func:`_matrix` when this returns "" -- so the position
+    cuts and the all-positions grid render the same way rather than one being a
+    plot and the others raw tables.
+    """
+    if plot is None:
+        return ""
+    values, texts = [], []
+    for a in labels:
+        row_v, row_t = [], []
+        for b in labels:
+            pct, n = share(a, b)
+            row_v.append(pct if n else float("nan"))
+            row_t.append(f"{pct:.0f}%" if n else "–")
+        values.append(row_v)
+        texts.append(row_t)
+    _plot_matrix(labels, values, texts, title, plot)
+    return f"![{title}](plots/{plot.name})"
+
+
 def target_agreement(
     scored: pd.DataFrame,
     census: pd.DataFrame,
@@ -688,13 +711,17 @@ def target_agreement(
     present = [s for s in scorers if s in choices]
     position = census.groupby("player_id")["position_code"].first()
 
-    def block(players: set, title: str, folded: bool = False) -> str:
-        def cell(a: str, b: str) -> str:
+    def block(players: set, title: str, folded: bool = False, plot: Path | None = None) -> str:
+        def share(a: str, b: str) -> tuple[float, int]:
             both = set(choices[a]) & set(choices[b]) & players
             if not both:
-                return "n/a"
-            same = sum(1 for p in both if choices[a][p] == choices[b][p])
-            return f"{same / len(both):.0%} ({len(both)})"
+                return float("nan"), 0
+            same = sum(1 for q in both if choices[a][q] == choices[b][q])
+            return 100.0 * same / len(both), len(both)
+
+        def cell(a: str, b: str) -> str:
+            pct, n = share(a, b)
+            return "n/a" if not n else f"{pct:.0f}% ({n})"
 
         # Reported only when a scorer misses someone: a line reading 100% every
         # time trains a reader to skip the one case worth seeing.
@@ -704,50 +731,20 @@ def target_agreement(
             if players and len(set(choices[s]) & players) < len(players)
         )
         note = f"\n\nincomplete coverage: {gaps}" if gaps else ""
+        body = _grid(present, share, f"same target match chosen (n={len(players):,})", plot)
+        body = body or _matrix(present, cell)
         if folded:
             return (
                 f"\n<details>\n<summary>{title} (n={len(players):,})</summary>\n"
-                f"\n{_matrix(present, cell)}{note}\n\n</details>"
+                f"\n{body}{note}\n\n</details>"
             )
-        return f"\n### {title} (n={len(players):,})\n\n{_matrix(present, cell)}{note}"
+        return f"\n### {title} (n={len(players):,})\n\n{body}{note}"
 
-    out = [
-        "\nIndependent of bar and dose. A gap in coverage is reported under the grid.",
-    ]
-    if plots_dir is None:
-        out.append(block(everyone, "all positions"))
-    else:
-        values, texts = [], []
-        for a in present:
-            row_v, row_t = [], []
-            for b in present:
-                both = set(choices[a]) & set(choices[b]) & everyone
-                if both:
-                    pct = 100.0 * sum(1 for q in both if choices[a][q] == choices[b][q]) / len(both)
-                    row_v.append(pct)
-                    row_t.append(f"{pct:.0f}%")
-                else:
-                    row_v.append(float("nan"))
-                    row_t.append("–")
-            values.append(row_v)
-            texts.append(row_t)
-        _plot_matrix(
-            present,
-            values,
-            texts,
-            f"same target match chosen (n={len(everyone):,})",
-            plots_dir / "target_agreement.svg",
-        )
-        out.append("\n![target agreement](plots/target_agreement.svg)")
-        gaps = ", ".join(
-            f"{s} {len(set(choices[s]) & everyone) / len(everyone):.0%}"
-            for s in present
-            if everyone and len(set(choices[s]) & everyone) < len(everyone)
-        )
-        if gaps:
-            out.append(f"\nincomplete coverage: {gaps}")
+    out = ["\nIndependent of bar and dose. A gap in coverage is reported under the grid."]
+    main = plots_dir / "target_agreement.svg" if plots_dir else None
+    out.append(block(everyone, "all positions", folded=False, plot=main))
     for code in heldout.POSITIONS:
-        cut = {p for p in everyone if position.get(p) == code}
+        cut = {q for q in everyone if position.get(q) == code}
         if not cut:
             continue
         if len(cut) < MIN_MATRIX_PLAYERS:
@@ -756,7 +753,8 @@ def target_agreement(
                 "a grid this thin measures the sample, not the scorers.*"
             )
             continue
-        out.append(block(cut, f"position {code}", folded=True))
+        cut_plot = plots_dir / f"target_agreement_{code}.svg" if plots_dir else None
+        out.append(block(cut, f"position {code}", folded=True, plot=cut_plot))
     return "\n".join(out)
 
 
@@ -787,81 +785,60 @@ def detection_agreement(
         caught[tally] = set(r.loc[r["after"] >= bars[tally], "player_id"])
     present = [t for t in tallies if t in caught]
 
-    def block_for(players: set, title: str, folded: bool = False) -> str:
+    def block_for(players: set, title: str, folded: bool = False, plot: Path | None = None) -> str:
         sets = {t: caught[t] & players for t in present}
 
+        def share(a: str, b: str) -> tuple[float, int]:
+            """Row-normalised |A∩B|/|A|, and the union as the count. NaN when
+            nothing was caught either side."""
+            union = len(sets[a] | sets[b])
+            if not union:
+                return float("nan"), 0
+            shared = len(sets[a] & sets[b])
+            return (100.0 * shared / len(sets[a]) if sets[a] else 0.0), union
+
         def cell(a: str, b: str) -> str:
-            caught_a, caught_b = sets[a], sets[b]
-            union = len(caught_a | caught_b)
+            union = len(sets[a] | sets[b])
             if not union:
                 return "n/a"
-            shared = len(caught_a & caught_b)
+            shared = len(sets[a] & sets[b])
             # A caught nothing, so "of A's catches" has no denominator -- the
             # Jaccard still does, and 0% there is a real statement about B.
-            row = f"{shared / len(caught_a):.0%}" if caught_a else "-"
+            row = f"{shared / len(sets[a]):.0%}" if sets[a] else "-"
             return f"{row}/{shared / union:.0%}"
 
         sizes = ", ".join(f"{t} {len(sets[t])}" for t in present)
+        body = _grid(present, share, f"of A's catches, % (n={len(players):,})", plot)
+        body = body or _matrix(present, cell)
         if folded:
             return (
                 f"\n<details>\n<summary>{title} (n={len(players):,})</summary>\n"
-                f"\n{_matrix(present, cell)}\n\ncaught: {sizes}\n\n</details>"
+                f"\n{body}\n\ncaught: {sizes}\n\n</details>"
             )
-        return f"\n### {title} (n={len(players):,})\n\n{_matrix(present, cell)}\n\ncaught: {sizes}"
+        return f"\n### {title} (n={len(players):,})\n\n{body}\n\ncaught: {sizes}"
 
     everyone = set(block["player_id"])
     out = [
         (
-            "\nCell = `|A∩B|/|A|` / Jaccard. Row A, column B: of the players A caught, "
+            "\nCell = `|A∩B|/|A|` / Jaccard in the tables; the heatmaps show the "
+            "row-normalised share alone. Row A, column B: of the players A caught, "
             "the share B also caught. Asymmetric on purpose."
         ),
     ]
-    if plots_dir is None:
-        out.append(block_for(everyone, "all positions"))
-    else:
-        sets = {s: caught[s] & everyone for s in present}
-        values, texts = [], []
-        for a in present:
-            row_v, row_t = [], []
-            for b in present:
-                union = len(sets[a] | sets[b])
-                shared = len(sets[a] & sets[b])
-                if not union:
-                    row_v.append(float("nan"))
-                    row_t.append("–")
-                elif sets[a]:
-                    pct = 100.0 * shared / len(sets[a])
-                    row_v.append(pct)
-                    row_t.append(f"{pct:.0f}/{100.0 * shared / union:.0f}")
-                else:
-                    row_v.append(0.0)
-                    row_t.append(f"–/{100.0 * shared / union:.0f}")
-            values.append(row_v)
-            texts.append(row_t)
-        _plot_matrix(
-            present,
-            values,
-            texts,
-            f"players caught by both: of A's catches / Jaccard, % (n={len(everyone):,})",
-            plots_dir / "detection_agreement.svg",
-        )
-        out.append("\n![detection agreement](plots/detection_agreement.svg)")
-        out.append("\ncaught: " + ", ".join(f"{s} {len(sets[s]):,}" for s in present))
+    main = plots_dir / "detection_agreement.svg" if plots_dir else None
+    out.append(block_for(everyone, "all positions", folded=False, plot=main))
     for code in heldout.POSITIONS:
-        cut = {p for p in everyone if position.get(p) == code}
+        cut = {q for q in everyone if position.get(q) == code}
         if not cut:
             continue
-        # The denominator here is what a scorer CAUGHT, not the cut's size: a
-        # position with plenty of players but few catches still cannot support
-        # percentages.
-        largest = max((len(caught[t] & cut) for t in present), default=0)
-        if largest < MIN_MATRIX_PLAYERS:
+        if len(cut) < MIN_MATRIX_PLAYERS:
             out.append(
-                f"\n*position {code}: {len(cut)} players, most caught by any scorer "
-                f"{largest} — too few to compare.*"
+                f"\n*position {code}: {len(cut)} players — too few to compare; "
+                "a grid this thin measures the sample, not the scorers.*"
             )
             continue
-        out.append(block_for(cut, f"position {code}", folded=True))
+        cut_plot = plots_dir / f"detection_agreement_{code}.svg" if plots_dir else None
+        out.append(block_for(cut, f"position {code}", folded=True, plot=cut_plot))
     return "\n".join(out)
 
 
